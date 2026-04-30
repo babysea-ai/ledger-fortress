@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ledger-fortress.dev/schemas/credit-event.v1.json",
+  "title": "CreditEvent",
+  "description": "One row per credit lifecycle event. Logged to the credit_ledger table on every reserve, charge, refund, or add.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "event_id",
+    "account_id",
+    "type",
+    "amount",
+    "balance_after",
+    "occurred_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "credit-event.v1",
+      "description": "Always 'credit-event.v1' for this schema."
+    },
+    "event_id": {
+      "type": "string",
+      "description": "Globally unique id (UUID) for the ledger entry.",
+      "minLength": 1
+    },
+    "account_id": {
+      "type": "string",
+      "description": "Account identifier (UUID).",
+      "minLength": 1
+    },
+    "type": {
+      "type": "string",
+      "description": "The type of credit event.",
+      "enum": ["reserve", "charge", "refund", "add"]
+    },
+    "amount": {
+      "type": "number",
+      "description": "Credit amount involved in this event.",
+      "exclusiveMinimum": 0
+    },
+    "balance_after": {
+      "type": "number",
+      "description": "Account balance after this event was applied.",
+      "minimum": 0
+    },
+    "generation_id": {
+      "type": ["string", "null"],
+      "description": "Links reserve/charge/refund to a specific generation. Required for charge and refund, optional for reserve."
+    },
+    "model": {
+      "type": ["string", "null"],
+      "description": "Model identifier for audit trail (e.g. 'flux-schnell')."
+    },
+    "description": {
+      "type": ["string", "null"],
+      "description": "Human-readable note. For 'add' events, this is the idempotency key (e.g. 'invoice:inv_xxx')."
+    },
+    "occurred_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC 3339 timestamp of when the event occurred."
+    }
+  },
+  "additionalProperties": false
+}

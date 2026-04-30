@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ledger-fortress"
+version = "0.1.0"
+description = "Atomic credit settlement engine for async AI workloads, built on Stripe + Postgres."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "BabySea, Inc.", email = "dev@babysea.ai" }]
+keywords = ["stripe", "postgres", "credits", "billing", "ai", "generative", "settlement", "ledger"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Office/Business :: Financial",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+  "psycopg2-binary>=2.9",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8",
+  "ruff>=0.5",
+  "pyright>=1.1",
+]
+
+[project.urls]
+Homepage = "https://github.com/babysea-ai/ledger-fortress"
+Documentation = "https://github.com/babysea-ai/ledger-fortress/tree/main/docs"
+Source = "https://github.com/babysea-ai/ledger-fortress"
+Issues = "https://github.com/babysea-ai/ledger-fortress/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["ledger_fortress*"]

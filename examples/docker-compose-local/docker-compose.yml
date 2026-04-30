@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: fortress
+      POSTGRES_PASSWORD: fortress
+      POSTGRES_DB: fortress
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ../../migrations/001_credits.sql:/docker-entrypoint-initdb.d/001_credits.sql:ro
+      - ../../migrations/002_credit_alerts.sql:/docker-entrypoint-initdb.d/002_credit_alerts.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fortress"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  pgdata:

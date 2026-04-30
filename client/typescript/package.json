@@ -1,0 +1,71 @@
+{
+  "name": "ledger-fortress",
+  "version": "0.1.0",
+  "description": "Atomic credit settlement engine for async AI workloads, built on Stripe + Postgres.",
+  "license": "Apache-2.0",
+  "author": "BabySea, Inc. <dev@babysea.ai>",
+  "homepage": "https://github.com/babysea-ai/ledger-fortress",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/babysea-ai/ledger-fortress.git",
+    "directory": "client/typescript"
+  },
+  "keywords": [
+    "stripe",
+    "postgres",
+    "credits",
+    "billing",
+    "ai",
+    "generative",
+    "settlement",
+    "ledger",
+    "idempotent"
+  ],
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    },
+    "./stripe": {
+      "types": "./dist/stripe.d.ts",
+      "import": "./dist/stripe.mjs",
+      "require": "./dist/stripe.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts src/stripe.ts --format cjs,esm --dts --clean",
+    "test": "vitest run",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "pg": "^8.13.0"
+  },
+  "peerDependencies": {
+    "stripe": ">=14.0.0"
+  },
+  "peerDependenciesMeta": {
+    "stripe": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/pg": "^8.11.0",
+    "stripe": "^17.0.0",
+    "tsup": "^8.5.1",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "vitest": "^1.6.1"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -1,0 +1,10 @@
+# ledger-fortress NOTICE
+
+Copyright 2026 BabySea, Inc.
+
+This product includes software developed at BabySea, Inc. (https://babysea.ai).
+
+It builds on the following open-source projects:
+- PostgreSQL (PostgreSQL License) - https://www.postgresql.org
+- node-postgres/pg (MIT License) - https://github.com/brianc/node-postgres
+- psycopg2 (LGPL 3.0) - https://www.psycopg.org
