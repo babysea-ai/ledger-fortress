@@ -1,5 +1,3 @@
-<div align="center">
-
 # 🏰 ledger-fortress
 
 **An atomic credit settlement engine for async AI workloads, built on Stripe + Postgres.**
@@ -10,8 +8,6 @@
 [![Status](https://img.shields.io/badge/status-alpha-orange.svg)](#status)
 
 *Every generation settles.*
-
-</div>
 
 ---
 
@@ -39,8 +35,6 @@ Every AI generation platform reinvents the same billing stack. They hit the same
 | **Anyone with the anon key can read or forge ledger entries.** | Migration `003_security.sql` enables RLS + FORCE RLS on every table, REVOKEs anon access, and runs mutations as `SECURITY DEFINER` with locked `search_path`. |
 
 ## Architecture
-
-<div align="center">
 
 <img src="https://cdn.babysea.live/oss-architecture/ledger-fortress.png" alt="ledger-fortress by BabySea" />
 
