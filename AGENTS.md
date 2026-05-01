@@ -9,7 +9,7 @@ This file mirrors the README so deploys, IDEs, and tooling that read `AGENTS.md`
 
 | Path | Purpose |
 |---|---|
-| `migrations/` | PostgreSQL migrations (001_credits.sql, 002_credit_alerts.sql) |
+| `migrations/` | PostgreSQL migrations (001_credits.sql, 002_credit_alerts.sql, 003_security.sql, 004_clawback_and_trueup.sql) |
 | `client/typescript/` | TypeScript SDK |
 | `client/python/` | Python SDK |
 | `schemas/` | JSON Schemas: `credit-event.v1.json`, `credit-alert.v1.json` |

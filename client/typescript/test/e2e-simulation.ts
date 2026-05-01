@@ -663,7 +663,7 @@ async function main() {
       `anon write denied (got HTTP ${writeResp.status})`);
 
     // ------------------------------------------------------------------
-    // 27. Test: Cost true-up (actual < reserved → refund difference)
+    // 27. Test: Cost true-up (actual < reserved ➜ refund difference)
     // ------------------------------------------------------------------
     console.log('\n--- Test 27: settle (true-down: actual < reserved) ---');
 

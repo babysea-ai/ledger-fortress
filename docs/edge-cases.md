@@ -72,11 +72,11 @@ With the charge being log-only (no balance change), the user's credits were alre
 ## 6. Refund Arrives After Charge (The deadly sequence)
 
 **Scenario:** 
-1. `reserve_credits` → balance deducted
-2. Success webhook → `charge_credits` (log-only confirmation)
+1. `reserve_credits` ➜ balance deducted
+2. Success webhook ➜ `charge_credits` (log-only confirmation)
 3. Your handler crashes and restarts
 4. Crash recovery finds the reservation, calls `refund_credits`
-5. Credits returned → user got a free generation
+5. Credits returned ➜ user got a free generation
 
 This is the most dangerous edge case. The user's generation succeeded (they have the output), but their credits were refunded.
 

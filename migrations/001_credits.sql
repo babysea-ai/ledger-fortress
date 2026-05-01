@@ -76,7 +76,7 @@ COMMENT ON TABLE credit_ledger IS 'Immutable audit trail of every credit movemen
 -- exactly-once semantics at the database level, not the application level.
 -- ============================================================================
 
--- One charge per generation. Second INSERT is a unique_violation → no-op.
+-- One charge per generation. Second INSERT is a unique_violation ➜ no-op.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_credit_ledger_charge_idempotent
   ON credit_ledger (generation_id) WHERE type = 'charge';
 
@@ -147,7 +147,7 @@ DECLARE
   v_new_balance NUMERIC;
 BEGIN
   -- Single atomic UPDATE with WHERE guard.
-  -- If tokens < p_tokens, zero rows updated → reservation fails.
+  -- If tokens < p_tokens, zero rows updated ➜ reservation fails.
   UPDATE credits
   SET tokens = tokens - p_tokens,
       updated_at = NOW()
@@ -257,8 +257,8 @@ COMMENT ON FUNCTION charge_credits IS 'Confirm a reservation (log-only). Idempot
 -- Returns reserved credits to the account after a failed or cancelled generation.
 --
 -- Two guards:
---   1. If already charged → do NOT refund (prevents: reserve → charge → crash → refund → free output)
---   2. If already refunded → no-op
+--   1. If already charged ➜ do NOT refund (prevents: reserve ➜ charge ➜ crash ➜ refund ➜ free output)
+--   2. If already refunded ➜ no-op
 --
 -- Idempotent: safe to call from webhooks, crash recovery, and cancel endpoints.
 -- ============================================================================
@@ -284,7 +284,7 @@ BEGIN
   PERFORM 1 FROM credits WHERE account_id = p_account_id FOR UPDATE;
 
   -- Guard 1: If already charged, do NOT refund.
-  -- This prevents the deadly sequence: reserve → webhook charges → crash → refund → free output.
+  -- This prevents the deadly sequence: reserve ➜ webhook charges ➜ crash ➜ refund ➜ free output.
   IF EXISTS (
     SELECT 1 FROM credit_ledger
     WHERE generation_id = p_generation_id AND type = 'charge'

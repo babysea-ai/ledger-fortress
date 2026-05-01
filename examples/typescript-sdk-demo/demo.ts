@@ -2,7 +2,7 @@
  * ledger-fortress TypeScript SDK demo.
  *
  * Demonstrates the full credit lifecycle:
- * reserve → async generation → charge (success) or refund (failure).
+ * reserve ➜ async generation ➜ charge (success) or refund (failure).
  *
  * Prerequisites:
  *   psql "$DATABASE_URL" < ../../migrations/001_credits.sql
@@ -120,7 +120,7 @@ async function main() {
   for (const entry of ledger) {
     const sign = entry.type === 'reserve' ? '-' : '+';
     console.log(
-      `  ${entry.type.padEnd(8)} ${sign}$${entry.amount.toFixed(3).padStart(7)} → $${entry.balanceAfter.toFixed(3).padStart(7)}  ${entry.model ?? entry.description ?? ''}`,
+      `  ${entry.type.padEnd(8)} ${sign}$${entry.amount.toFixed(3).padStart(7)} ➜ $${entry.balanceAfter.toFixed(3).padStart(7)}  ${entry.model ?? entry.description ?? ''}`,
     );
   }
 

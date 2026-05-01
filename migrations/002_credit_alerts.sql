@@ -62,7 +62,7 @@ CREATE TABLE IF NOT EXISTS credit_alert_log (
   UNIQUE (account_id, threshold)
 );
 
-COMMENT ON TABLE credit_alert_log IS 'Dedup state machine: armed (no row) → fired (row exists) → armed (row deleted on reset).';
+COMMENT ON TABLE credit_alert_log IS 'Dedup state machine: armed (no row) ➜ fired (row exists) ➜ armed (row deleted on reset).';
 
 -- ============================================================================
 -- FUNCTION: check_credit_alerts(account_id)
@@ -115,7 +115,7 @@ BEGIN
   -- Check each threshold
   FOREACH v_threshold IN ARRAY v_thresholds LOOP
     IF v_balance < v_threshold THEN
-      -- Try to mark as fired (INSERT). If already fired, unique_violation → skip.
+      -- Try to mark as fired (INSERT). If already fired, unique_violation ➜ skip.
       BEGIN
         INSERT INTO credit_alert_log (account_id, threshold, balance)
         VALUES (p_account_id, v_threshold, v_balance);

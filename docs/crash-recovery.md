@@ -12,7 +12,7 @@ Time    Your App                    Provider                 Ledger
 50ms    handler crashes/restarts           
 ...                                 processing...
 3000ms                              generation complete
-3010ms                              webhook → your app
+3010ms                              webhook ➜ your app
 3020ms  ???  (handler doesn't know              
         about this generation)
 ```
@@ -33,6 +33,7 @@ SELECT * FROM find_orphaned_reservations(
 ```
 
 It returns reservations where:
+
 - `type = 'reserve'`
 - `generation_id IS NOT NULL`
 - `created_at < NOW() - 5 minutes`
@@ -54,8 +55,8 @@ A 5-minute window covers most workloads. For longer video models, increase to 10
 
 Crash recovery calls `refund_credits()` for each orphan. This function has two guards:
 
-1. **If already charged → no-op.** If the provider's success webhook arrived while crash recovery was processing, the charge wins. No double-credit.
-2. **If already refunded → no-op.** If the provider's failure webhook arrived, the refund already happened. No double-refund.
+1. **If already charged ➜ no-op.** If the provider's success webhook arrived while crash recovery was processing, the charge wins. No double-credit.
+2. **If already refunded ➜ no-op.** If the provider's failure webhook arrived, the refund already happened. No double-refund.
 
 This means crash recovery is safe to run at any frequency. It can overlap with webhooks. It can run twice for the same orphan. The guards ensure correctness.
 
@@ -83,6 +84,7 @@ const result = await fortress.recoverOrphans({
 ### Monitoring
 
 Track these metrics:
+
 - `inspected`: number of orphans found - should be low and stable
 - `refunded`: number of orphans successfully refunded - spikes indicate provider issues
 - `errors`: number of refund failures - should be zero

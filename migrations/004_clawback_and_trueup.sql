@@ -167,9 +167,9 @@ COMMENT ON FUNCTION clawback_credits IS 'Clawback credits from a Stripe refund o
 -- known after the model finishes (most common in generative media).
 --
 -- Three cases:
---   1. actual == reserved  → equivalent to charge_credits (log only)
---   2. actual <  reserved  → refund the difference (true-down)
---   3. actual >  reserved  → atomic re-deduct the difference (true-up)
+--   1. actual == reserved  ➜ equivalent to charge_credits (log only)
+--   2. actual <  reserved  ➜ refund the difference (true-down)
+--   3. actual >  reserved  ➜ atomic re-deduct the difference (true-up)
 --                            If insufficient balance, settle still succeeds
 --                            but an 'uncollectible' entry is recorded.
 --

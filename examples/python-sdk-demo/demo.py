@@ -2,7 +2,7 @@
 ledger-fortress Python SDK demo.
 
 Demonstrates the full credit lifecycle:
-reserve → async generation → charge (success) or refund (failure).
+reserve ➜ async generation ➜ charge (success) or refund (failure).
 
 Prerequisites:
     psql "$DATABASE_URL" < ../../migrations/001_credits.sql
@@ -106,7 +106,7 @@ def main() -> None:
         sign = "-" if entry.type == "reserve" else "+"
         desc = entry.model or entry.description or ""
         print(
-            f"  {entry.type:<8} {sign}${entry.amount:>7.3f} → ${entry.balance_after:>7.3f}  {desc}"
+            f"  {entry.type:<8} {sign}${entry.amount:>7.3f} ➜ ${entry.balance_after:>7.3f}  {desc}"
         )
 
     # -------------------------------------------------------------------------

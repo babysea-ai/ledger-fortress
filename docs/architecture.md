@@ -1,114 +1,119 @@
 # Architecture
 
-`ledger-fortress` is an atomic credit settlement engine for async AI workloads.
+This document explains the settlement loops, the storage layout, and the SQL guarantees. For the full edge-case walkthrough, see [`edge-cases.md`](edge-cases.md). For Stripe webhook specifics, see [`stripe-integration.md`](stripe-integration.md). For orphan recovery, see [`crash-recovery.md`](crash-recovery.md).
 
-## The problem
+## The two loops
 
-Every AI generation platform (Midjourney, RunwayML, Pika, Leonardo, your app) runs the same sequence:
+`ledger-fortress` is two loops glued together by the ledger.
 
-1. User clicks "Generate"
-2. Reserve credits (must be atomic - no overdraw)
-3. Dispatch to an inference provider (takes 2-120 seconds)
-4. Wait for async webhook
-5. On success: confirm the charge
-6. On failure: refund the credits
+### 1. The request loop (hot path, synchronous)
 
-The gap between step 2 and step 5 is where the edge cases live. Every team hand-rolls this in their app, gets 4 of the 6 edge cases right, and discovers the other 2 in production at 3am.
+```
+your app  ➜  reserve(account, generation, amount)  ➜  provider
+         ←  charge(...) / refund(...) / settle(...) ←  webhook / callback
+```
 
-## Design principles
+- `reserve_credits` is a single atomic balance check and deduction.
+- The async workload starts only after the reservation succeeds.
+- Success, failure, or true-up is recorded later as a ledger event, not a second balance check.
 
-### 1. Atomic at the SQL level
+### 2. The reconciliation loop (async, idempotent)
 
-Every credit mutation is a single SQL statement. No application-level locks, no
-distributed transactions, no "check then update" patterns.
+```
+Stripe webhooks / provider webhooks / crash recovery cron
+    ➜ add_credits / charge_credits / refund_credits / settle_credits / clawback_credits
+    ➜ credit_ledger + credits balance
+```
+
+- Stripe grants recurring or one-time credits.
+- Provider callbacks settle the reserved generation.
+- Crash recovery refunds orphaned reservations after the safety window.
+- Every path is replay-safe at the SQL layer, so retries are harmless.
+
+## Storage layout
+
+| Table | Grain | Purpose |
+|---|---|---|
+| `plans` | one row per Stripe price | Maps price IDs to credit grants |
+| `credits` | one row per account | Current spendable balance with `CHECK (tokens >= 0)` |
+| `credit_ledger` | immutable event log | Reserve / charge / refund / trueup / add / clawback / uncollectible entries |
+| `credit_alert_settings` | one row per account | Threshold and channel configuration |
+| `credit_alert_log` | one row per threshold crossing | Deduplicates low-balance alerts |
+
+## The guarantees
+
+### 1. Atomic balance changes
+
+Every balance mutation is one SQL statement. No application lock, no distributed transaction, and no separate "check then update" round-trip.
 
 ```sql
 -- reserve_credits: atomic check-and-deduct
 UPDATE credits
 SET tokens = tokens - p_tokens
 WHERE account_id = p_account_id
-  AND tokens >= p_tokens          -- WHERE guard = atomic check
+  AND tokens >= p_tokens
 RETURNING tokens;
 ```
 
-If two requests hit this concurrently, PostgreSQL serializes them. The first one
-succeeds; the second one sees the updated balance and fails if insufficient. No TOCTOU.
+If two requests race, PostgreSQL serializes the updates. The second request sees the new balance and fails cleanly if there is not enough left.
 
-### 2. Idempotent at the index level
+### 2. Exactly-once settlement
 
-Every settlement operation is protected by a unique partial index:
+Settlement paths are protected by unique partial indexes:
 
 ```sql
--- One charge per generation
 CREATE UNIQUE INDEX idx_credit_ledger_charge_idempotent
   ON credit_ledger (generation_id) WHERE type = 'charge';
 
--- One refund per generation
 CREATE UNIQUE INDEX idx_credit_ledger_refund_idempotent
   ON credit_ledger (generation_id) WHERE type = 'refund';
 
--- One add per (account, description)
 CREATE UNIQUE INDEX idx_credit_ledger_add_idempotent
   ON credit_ledger (account_id, description) WHERE type = 'add';
+
+CREATE UNIQUE INDEX idx_credit_ledger_clawback_idempotent
+  ON credit_ledger (account_id, description) WHERE type = 'clawback';
+
+CREATE UNIQUE INDEX idx_credit_ledger_trueup_idempotent
+  ON credit_ledger (generation_id) WHERE type = 'trueup';
 ```
 
-Duplicate webhooks, network retries, crash recovery re-runs - all produce a `unique_violation` that the function catches and converts to a no-op return.
+Duplicate webhooks, network retries, and crash-recovery re-runs collapse into a no-op.
 
-### 3. Additive grants (rollover, never reset)
+### 3. Additive grants and bounded clawbacks
 
-When a subscription renews, credits are _added_ to the existing balance. They never reset. This prevents the deadly scenario:
+- `add_credits` increments the balance; it never resets it.
+- `clawback_credits` floors the balance at zero and records any gap as `uncollectible`.
+- Subscription renewals and credit packs compose cleanly instead of overwriting each other.
 
-1. User buys a $10 credit pack
-2. Subscription renews
-3. Balance "resets" to $29 (subscription amount)
-4. User's $10 credit pack vanishes
+### 4. Guarded state transitions
 
-`add_credits` uses `INSERT ... ON CONFLICT DO UPDATE SET tokens = tokens + p_tokens`.
-
-### 4. Guards against state machine violations
-
-The three-phase lifecycle has exactly two valid terminal states:
+The valid terminal states are:
 
 ```
-reserved → charged    (success)
-reserved → refunded   (failure)
+reserved ➜ charged
+reserved ➜ refunded
+reserved ➜ settled
 ```
 
-Two invalid transitions must be prevented:
+- `refund_credits` no-ops if the generation is already charged.
+- `charge_credits` re-checks prior refund state under lock.
+- `settle_credits` serializes the true-up path for that generation and can emit `trueup` and `uncollectible` entries when the actual cost differs from the reservation.
+- `FOR UPDATE` serialization prevents conflicting outcomes for the same generation.
 
-- `charged → refunded` (would give free output)
-- `refunded → charged` (would confirm a returned reservation)
+## Fail-open ladder
 
-Both are blocked by explicit guard queries in the SQL functions.
+| Failure | Behavior |
+|---|---|
+| Stripe delayed | Reserved credits already gate generation; reconciliation happens later |
+| Provider callback delayed | Reservation remains in place until charge, refund, or crash recovery resolves it |
+| Crash recovery misses a cycle | The orphan waits for the next run; no balance corruption occurs |
+| Alert delivery fails | Alert checks are fire-and-forget and retried on later reservations |
+| Duplicate webhook or retry | Unique partial indexes convert the replay into a no-op |
 
-## Data model
+## Deployment boundary
 
-```
-┌──────────────┐     ┌─────────────────┐     ┌──────────────┐
-│   credits    │     │  credit_ledger  │     │    plans     │
-│              │     │                 │     │              │
-│ account_id ──┼──┐  │ account_id      │     │ variant_id   │
-│ tokens       │  │  │ type            │     │ tokens       │
-│ updated_at   │  │  │ amount          │     │ name         │
-│              │  │  │ balance_after   │     │              │
-│ CHECK≥0      │  │  │ generation_id   │     └──────────────┘
-└──────────────┘  │  │ model           │
-                  │  │ description     │
-                  │  │ created_at      │
-                  │  │                 │
-                  │  │ UNIQUE PARTIAL  │
-                  └──┤ INDEXES for     │
-                     │ idempotency     │
-                     └─────────────────┘
-```
-
-## Edge case matrix
-
-| # | Edge case | Attack vector | Defense |
-|---|---|---|---|
-| 1 | TOCTOU race | Two clicks 50ms apart both read balance=10 | `UPDATE ... WHERE tokens >= cost` (no separate SELECT) |
-| 2 | Provider ghost | No webhook arrives, credits locked | `find_orphaned_reservations` cron |
-| 3 | Duplicate charge | Stripe retries success webhook | Unique partial index on `(generation_id) WHERE type='charge'` |
-| 4 | Duplicate refund | Retry/crash recovery both refund | Unique partial index on `(generation_id) WHERE type='refund'` |
-| 5 | Charge after refund | Out-of-order webhooks | `charge_credits` checks for existing refund |
-| 6 | Refund after charge | Crash recovery runs after success | `refund_credits` checks for existing charge |
+- PostgreSQL is the source of truth for balance and ledger state.
+- Run migrations over a direct/session connection; run runtime traffic through a transaction-mode pooler.
+- Webhooks, cron, and application servers can fail independently because settlement is replay-safe.
+- The application decides when to start work; PostgreSQL decides whether the account can afford it.

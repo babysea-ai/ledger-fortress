@@ -60,7 +60,7 @@ const handler = createStripeWebhookHandler({
   fortress,
   stripeSecret: process.env.STRIPE_WEBHOOK_SECRET!,
   resolveAccountId: async (customerId) => {
-    // Your logic to map Stripe customer → account
+    // Your logic to map Stripe customer ➜ account
     const account = await db.accounts.findFirst({
       where: { stripeCustomerId: customerId },
     });
@@ -129,7 +129,7 @@ The `idx_credit_ledger_add_idempotent` unique partial index ensures that even if
 
 If you offer credit packs as one-time purchases, implement the `hasActiveSubscription` callback to prevent stale checkout redemption:
 
-**Scenario:** User starts a credit pack checkout → cancels their subscription → completes the checkout. Without the guard, they'd get credits without an active subscription.
+**Scenario:** User starts a credit pack checkout ➜ cancels their subscription ➜ completes the checkout. Without the guard, they'd get credits without an active subscription.
 
 **With the guard:** `ledger-fortress` checks for an active subscription before granting credits. If none exists, the checkout is recorded but credits are not added.
 

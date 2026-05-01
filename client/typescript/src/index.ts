@@ -221,8 +221,8 @@ export class LedgerFortress {
    * Return reserved credits after a failed or cancelled generation.
    *
    * Guards:
-   * - If already charged → no-op (prevents free output)
-   * - If already refunded → no-op (prevents double-refund)
+   * - If already charged ➜ no-op (prevents free output)
+   * - If already refunded ➜ no-op (prevents double-refund)
    *
    * Idempotent: safe to call from webhooks, crash recovery, and cancel endpoints.
    */
