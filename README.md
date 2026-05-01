@@ -40,8 +40,6 @@ Every AI generation platform reinvents the same billing stack. They hit the same
 
 ## Architecture
 
-<div align="center">
-
 <img src="https://cdn.babysea.live/oss-architecture/ledger-fortress.png" alt="ledger-fortress by BabySea" />
 
 **Three pillars, all battle-tested:**
