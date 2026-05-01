@@ -1,6 +1,6 @@
-# The Six Edge Cases
+# The Seven Edge Cases
 
-Every async credit system must survive these six scenarios. `ledger-fortress` handles all of them at the SQL level.
+Every async credit system must survive these scenarios. `ledger-fortress` handles all of them at the SQL level.
 
 ## 1. TOCTOU Race (Two clicks, 50ms apart)
 
@@ -35,7 +35,7 @@ Request A runs the UPDATE, balance goes from 10 to 5. Request B runs the same UP
 ```sql
 SELECT * FROM find_orphaned_reservations(5, 100);
 ```
-Finds reservations older than 5 minutes with no matching charge or refund. Refunds them automatically.
+Finds reservations older than 5 minutes with no matching charge, refund, or true-up settlement. Refunds them automatically.
 
 ## 3. Duplicate Success Webhook
 
@@ -67,7 +67,7 @@ Second refund is a no-op. Credits returned exactly once.
 
 With the charge being log-only (no balance change), the user's credits were already returned by the refund. The charge would silently confirm a generation that got free credits.
 
-**Defense:** `charge_credits` checks for existing refund. If found, the function can flag this for your application to handle (re-deduct or mark as disputed).
+**Defense:** `charge_credits_detailed` checks for an existing refund under the account lock. If found, it re-deducts the reserved amount before logging success. If the balance cannot fully cover the late correction, it deducts what is available, logs the successful generation, writes an `uncollectible` shortfall (`charge_after_refund_shortfall:<generation_id>`), and returns `status = 'shortfall'` so the application can pause the account or route the case to manual review. The boolean `charge_credits` wrapper remains available for old callers, but new integrations should use the detailed status when late callbacks are possible. If the generation was already settled through `settle_credits`, `charge_credits_detailed` returns `already_settled`.
 
 ## 6. Refund Arrives After Charge (The deadly sequence)
 
@@ -80,15 +80,23 @@ With the charge being log-only (no balance change), the user's credits were alre
 
 This is the most dangerous edge case. The user's generation succeeded (they have the output), but their credits were refunded.
 
-**Defense:** `refund_credits` has Guard 1:
+**Defense:** `refund_credits` has terminal-state guards:
 ```sql
--- Guard 1: If already charged, do NOT refund.
 IF EXISTS (
   SELECT 1 FROM credit_ledger
-  WHERE generation_id = p_generation_id AND type = 'charge'
+  WHERE generation_id = p_generation_id
+    AND type IN ('charge', 'trueup')
 ) THEN
   RETURN FALSE;
 END IF;
 ```
 
-The refund is blocked. Credits stay deducted. User pays for what they received.
+The refund is blocked after charge or true-up settlement. Credits stay deducted. User pays for what they received.
+
+## 7. Settlement Without Reservation (App bug)
+
+**Scenario:** A buggy handler calls `charge_credits`, `refund_credits`, or `settle_credits` for a `generation_id` that was never reserved.
+
+Without a reserve guard, a refund or true-down could mint credits, and a charge could mark unpaid output as settled.
+
+**Defense:** Every terminal settlement path checks for a matching `reserve` row for the same `account_id` and `generation_id`. If no reservation exists, the function returns `FALSE` and leaves the balance unchanged.

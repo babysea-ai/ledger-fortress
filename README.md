@@ -13,7 +13,9 @@
 
 ## What this is
 
-`ledger-fortress` is the open-source pattern behind [BabySea](https://babysea.ai)'s production credit system: an atomic reserve ➜ charge ➜ refund lifecycle that turns Stripe subscriptions and one-time purchases into spendable credits, settles them against async AI generations, and is designed to prevent the failure modes that lose cents to race conditions, duplicate webhooks, or crashed handlers.
+`ledger-fortress` is an open-source credit-settlement engine inspired by the core invariants used in [BabySea](https://babysea.ai)'s production credit system: atomic reserve ➜ charge ➜ refund, database-enforced idempotency, and crash recovery for async AI generations. The OSS package generalizes that pattern for Stripe/Postgres teams that need subscriptions, credit packs, variable-cost settlement, refunds, disputes, and auditable shortfalls.
+
+For the exact split between BabySea-mirrored behavior and OSS-generalized extensions, see [`docs/babysea-provenance.md`](docs/babysea-provenance.md).
 
 If you run an **AI generation platform** (images, video, audio, 3D - anything where the workload runs asynchronously for 2-120 seconds), this repo gives you the entire credit lifecycle. Apply the SQL migrations to your Postgres, then call the SDK (TypeScript or Python) from your application.
 
@@ -28,17 +30,17 @@ Every AI generation platform reinvents the same billing stack. They hit the same
 | **Race conditions.** User clicks "Generate" twice in 50ms. Both requests check the balance before either deducts. Overdraw. | Single `UPDATE ... WHERE tokens >= cost` - atomic check-and-deduct in one statement. No TOCTOU window exists. |
 | **Lost credits.** Provider crashes mid-generation. No webhook arrives. Credits reserved forever. User churns. | Crash recovery cron finds orphans older than `windowMinutes` and refunds them. Idempotent with the success path. |
 | **Double settlement.** Stripe retries a webhook. Handler runs twice. User charged twice. Or refunded twice. | Unique partial indexes cover `charge`, `refund`, `trueup`, and clawback paths, plus additive grants keyed on `(account_id, description)`. Exactly-once at the SQL level. |
-| **Webhooks arrive out of order.** Refund hits before the charge confirmation. User generates for free. | `charge_credits` checks for prior refund and re-deducts atomically. `refund_credits` checks for prior charge and no-ops. Both serialized via `FOR UPDATE`. |
+| **Webhooks arrive out of order.** Refund hits before the charge confirmation. User generates for free. | `charge_credits` checks for prior refund and re-deducts atomically before logging charge. If it cannot fully collect, it logs a durable `uncollectible` shortfall and returns `FALSE` for application review. `refund_credits` checks for prior charge and no-ops. |
 | **Variable cost generation.** Reserve $1 max for video, actual cost is $0.30. Most billing systems can't true-up. | `settle_credits(reserved, actual)` atomically returns the difference, or re-deducts on overshoot. Idempotent per generation. |
 | **Customer disputes the charge.** Stripe refunds the payment. Your books still show the credits as granted. | `charge.refunded` and `charge.dispute.created` webhooks claw back credits up to available balance. Shortfall recorded as `uncollectible` for accounting. Balance never goes negative. |
 | **Credit packs vanish on subscription renewal.** User buys $10 pack, then renewal "resets" the balance. Pack lost. | `add_credits` is additive (`tokens = tokens + amount`), never resets. Audit trail shows every grant. |
-| **Anyone with the anon key can read or forge ledger entries.** | Migration `003_security.sql` enables RLS + FORCE RLS on every table, REVOKEs anon access, and runs mutations as `SECURITY DEFINER` with locked `search_path`. |
+| **Anyone with the anon key can read or forge ledger entries.** | Migration `003_security.sql` enables RLS, REVOKEs anon/authenticated access, and runs mutations as `SECURITY DEFINER` with locked `search_path`. |
 
 ## Architecture
 
 <img src="https://cdn.babysea.live/oss-architecture/ledger-fortress.png" alt="ledger-fortress by BabySea" />
 
-**Three pillars, all battle-tested:**
+**Three pillars, based on the same credit-settlement invariants BabySea relies on:**
 
 - 🐘 **[PostgreSQL](https://www.postgresql.org)** - atomic transactions, CHECK constraints, unique partial indexes
 - 💳 **[Stripe](https://stripe.com)** - subscriptions, one-time purchases, webhook reconciliation
@@ -62,9 +64,9 @@ That's it. You get:
 - `credits` table (one row per account, CHECK >= 0)
 - `credit_ledger` table (immutable audit trail with idempotency indexes)
 - `plans` table (Stripe price ID -> credit allocation mapping)
-- Fifteen public SQL functions: `reserve_credits`, `charge_credits`, `refund_credits`, `add_credits`, `settle_credits`, `clawback_credits`, `has_credits`, `get_balance`, `get_uncollectible_total`, `list_credit_ledger`, `find_orphaned_reservations`, `check_credit_alerts`, `reset_credit_alerts`, `get_credit_alert_settings`, `upsert_credit_alert_settings`
+- Seventeen public SQL functions: `reserve_credits`, `charge_credits`, `charge_credits_detailed`, `refund_credits`, `add_credits`, `settle_credits`, `clawback_credits`, `has_credits`, `get_balance`, `get_plan_credits`, `get_uncollectible_total`, `list_credit_ledger`, `find_orphaned_reservations`, `check_credit_alerts`, `reset_credit_alerts`, `get_credit_alert_settings`, `upsert_credit_alert_settings`
 - Credit alert tables with state-machine deduplication
-- **RLS enabled and FORCED on every table** (deny-all to anon/authenticated; access only via service-role or fortress functions)
+- **RLS enabled on every table** with anon/authenticated table access revoked; runtime access goes through your backend and fortress functions
 - All mutating functions run as `SECURITY DEFINER` with locked `search_path`
 
 ### Option 2. Use the TypeScript SDK
@@ -175,7 +177,7 @@ else:
   )
 ```
 
-> The Python SDK currently exposes the core `reserve`/`charge`/`refund`/`add_credits`/`recover_orphans` operations. `settle`, `clawback`, and `get_uncollectible_total` are TypeScript-only in 0.1; until parity ships, call those SQL functions directly from Python via `psycopg2` or your preferred PostgreSQL driver.
+The Python SDK exposes the same core lifecycle as the TypeScript SDK, including `settle`, `clawback`, and `get_uncollectible_total`.
 
 ### Option 4. Just use the schemas
 
@@ -201,7 +203,7 @@ The JSON schemas in [`schemas/`](schemas/) are the contract. Emit `credit-event.
 
 ## Using the SDK
 
-The TypeScript and Python SDKs share the same reserve ➜ charge ➜ refund core contract. Use `charge()` when the reserved amount is the final amount. Use `settle()` for variable-cost true-up from the TypeScript SDK today, or call `settle_credits` directly from Python until parity ships.
+The TypeScript and Python SDKs share the same reserve ➜ charge ➜ refund core contract. Use `charge()` when the reserved amount is the final amount. Use `settle()` for variable-cost true-up.
 
 ```typescript
 const reserved = await fortress.reserve({
@@ -222,9 +224,18 @@ if (reserved) {
 }
 ```
 
+For late success callbacks that arrive after a refund/crash-recovery path, use `chargeDetailed()` / `charge_detailed()` when you need to distinguish duplicate/no-op from a durable shortfall:
+
+```typescript
+const result = await fortress.chargeDetailed({ accountId, generationId, amount });
+if (result.status === 'shortfall') {
+  // result.uncollectible was written to the ledger; pause or review account.
+}
+```
+
 See [`examples/typescript-sdk-demo/`](examples/typescript-sdk-demo/) and [`examples/python-sdk-demo/`](examples/python-sdk-demo/) for end-to-end demos that add credits, reserve, charge or refund, inspect the ledger, and run crash recovery.
 
-## The six edge cases
+## The seven edge cases
 
 | Edge case | What goes wrong | How the fortress handles it |
 |---|---|---|
@@ -232,8 +243,9 @@ See [`examples/typescript-sdk-demo/`](examples/typescript-sdk-demo/) and [`examp
 | **Provider never responds** | Credits locked forever, user complains | Crash recovery cron finds reservations older than threshold, refunds them |
 | **Duplicate success webhook** | Double-charge | Unique partial index on `(generation_id) WHERE type='charge'` - second INSERT is a no-op |
 | **Duplicate failure webhook** | Double-refund, free credits | Unique partial index on `(generation_id) WHERE type='refund'` - second INSERT is a no-op |
-| **Charge arrives AFTER refund** | Refund returned credits, charge would confirm the reservation ➜ user generated for free | Guard: `charge_credits` checks if already refunded - if yes, re-deducts the balance. Serialized via `FOR UPDATE` |
+| **Charge arrives AFTER refund** | Refund returned credits, charge would confirm the reservation ➜ user generated for free | Guard: `charge_credits_detailed` checks if already refunded - if yes, it re-deducts before logging charge; if it cannot fully collect, it logs `uncollectible` and returns `status: 'shortfall'` |
 | **Refund arrives AFTER charge** | Would return credits for a successful generation | Guard: `refund_credits` checks if already charged - if yes, no-op. Serialized via `FOR UPDATE` |
+| **Settlement without reserve** | App bug calls charge/refund/settle for a generation that never reserved credits | Terminal settlement functions require a matching `reserve` row for the same account and generation |
 
 ## Stripe integration
 
@@ -253,6 +265,15 @@ const handler = createStripeWebhookHandler({
     // Map Stripe customer to your account ID
     return db.accounts.findByStripeCustomer(customerId);
   },
+  resolveInvoiceCredits: async (invoice) => {
+    // Optional: override amount_paid / 100 with get_plan_credits() lookup
+    const priceId = invoice.lines?.data?.[0]?.price?.id;
+    return priceId ? fortress.getPlanCredits(priceId) : null;
+  },
+  resolveChargeAccountId: async (chargeId) => {
+    // Optional: map unexpanded dispute charge IDs to your account ID
+    return db.accounts.findByStripeCharge(chargeId);
+  },
 });
 
 // Next.js App Router example (raw body required for signature verification)
@@ -266,14 +287,15 @@ export async function POST(req: Request) {
 
 // Handles:
 // - invoice.paid               (subscription renewal, idempotent via invoice ID)
-// - checkout.session.completed (credit pack purchase, idempotent via order ID)
-// - charge.refunded            (clawback credits proportional to refund)
+// - checkout.session.completed / async_payment_succeeded
+//                              (paid credit pack purchase, idempotent via order ID)
+// - charge.refunded            (clawback credits for the latest refund object)
 // - charge.dispute.created     (clawback disputed amount)
 ```
 
 ### Plans configuration
 
-Map your Stripe Price IDs to credit allocations:
+If you grant fixed credits by Stripe Price ID, map those IDs to credit allocations:
 
 ```sql
 INSERT INTO plans (name, variant_id, tokens) VALUES
@@ -284,6 +306,8 @@ INSERT INTO plans (name, variant_id, tokens) VALUES
 ```
 
 Credits are **additive** (rollover, never reset). A Pro subscriber who buys a $10 credit pack gets $39 total, not $29.
+
+By default, the Stripe helper grants credits from the amount Stripe reports as paid (`amount_paid / 100` or `amount_total / 100`). Use `resolveInvoiceCredits` or `resolveCheckoutCredits` when you want `get_plan_credits()`/`plans.tokens` or another custom allocation rule instead. Custom resolvers run even when Stripe reports a zero amount, which supports fixed-credit plans, discounts, trials, and custom enterprise billing rules.
 
 ## Variable cost true-up
 
@@ -332,6 +356,7 @@ const result = await fortress.clawback({
   reason: 'stripe_refund',
 });
 
+// result.applied === false means this Stripe refund/dispute was already processed.
 // result.uncollectible > 0 means the customer already spent more than they owe back.
 // The shortfall is logged as 'uncollectible' for accounting; balance never goes negative.
 
@@ -346,7 +371,7 @@ if (owed > 0) {
 | Idempotent | One clawback per `idempotencyKey` (use Stripe refund/dispute ID) |
 | Never negative | Balance floors at 0; the gap is recorded as `uncollectible` |
 | Atomic | Single `FOR UPDATE` serialized transaction |
-| Auditable | Every clawback gets a ledger entry; uncollectible gets a separate entry |
+| Auditable | Every new clawback gets a ledger entry, even when zero credits were available; uncollectible gets a separate entry |
 
 ## Credit alerts
 
@@ -383,7 +408,7 @@ import { LedgerFortress } from 'ledger-fortress';
 
 const fortress = new LedgerFortress({ databaseUrl: process.env.DATABASE_URL });
 
-// Find reservations older than `windowMinutes` with no charge or refund
+// Find reservations older than `windowMinutes` with no terminal settlement
 const result = await fortress.recoverOrphans({
   windowMinutes: 5,
   limit: 100,
@@ -413,7 +438,7 @@ The settlement engine is **on the critical path** (it must be - you can't genera
 Before going live with real Stripe payments:
 
 - [ ] Apply all four migrations (`001`, `002`, `003`, `004`)
-- [ ] Confirm RLS is `ENABLED` and `FORCED` on all five tables (`SELECT relname, relrowsecurity, relforcerowsecurity FROM pg_class WHERE relname IN ('plans','credits','credit_ledger','credit_alert_settings','credit_alert_log');`)
+- [ ] Confirm RLS is `ENABLED` on all five tables (`SELECT relname, relrowsecurity FROM pg_class WHERE relname IN ('plans','credits','credit_ledger','credit_alert_settings','credit_alert_log');`)
 - [ ] Verify the `anon` role cannot read or write any fortress table via PostgREST (`curl ... | grep 42501`)
 - [ ] Always call `verifyStripeSignature()` before passing events to the handler
 - [ ] Subscribe your Stripe webhook to: `invoice.paid`, `checkout.session.completed`, `charge.refunded`, `charge.dispute.created`
@@ -429,7 +454,7 @@ Before going live with real Stripe payments:
 
 ## Status
 
-`ledger-fortress` is **alpha** (v0.1.0). The pattern is battle-tested in [BabySea](https://babysea.ai)'s production stack serving 80+ AI models across 12+ labs. This repo packages and generalizes that pattern. APIs may change before 1.0. See [`CHANGELOG.md`](CHANGELOG.md).
+`ledger-fortress` is **alpha** (v0.1.0). The reserve ➜ charge ➜ refund core is inspired by [BabySea](https://babysea.ai)'s production stack serving 80+ AI models across 12+ labs. This repo packages and generalizes those settlement invariants for community Stripe/Postgres deployments. APIs may change before 1.0. See [`CHANGELOG.md`](CHANGELOG.md).
 
 Both the TypeScript and Python SDKs build. The TypeScript SDK ships with tests. Neither is published to npm/PyPI yet for 0.1; install from source or pin to a commit SHA.
 
@@ -450,7 +475,7 @@ Both the TypeScript and Python SDKs build. The TypeScript SDK ships with tests. 
 
 ## Who's using it
 
-- 🌊 **[BabySea](https://babysea.ai)**: the execution control plane for generative media. 80+ image and video models from 12+ AI labs, settled through this exact pattern in production.
+- 🌊 **[BabySea](https://babysea.ai)**: the execution control plane for generative media. 80+ image and video models from 12+ AI labs, settled through the reserve ➜ charge ➜ refund core pattern this project packages.
 
 *Using `ledger-fortress`? Open a PR to add yourself.*
 

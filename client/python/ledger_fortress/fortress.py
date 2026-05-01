@@ -14,7 +14,9 @@ import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from typing import Any, Callable, Sequence
+
 import psycopg2
 import psycopg2.pool
 
@@ -51,9 +53,47 @@ class RecoverResult:
 
 
 @dataclass(frozen=True)
+class ClawbackResult:
+    applied: bool
+    uncollectible: float
+
+
+@dataclass(frozen=True)
+class ChargeResult:
+    status: str
+    charged: bool
+    uncollectible: float
+
+
+@dataclass(frozen=True)
 class AlertThreshold:
     threshold: float
     balance: float
+
+
+def _assert_credit_amount(
+    amount: float,
+    field_name: str = "amount",
+    *,
+    allow_zero: bool = False,
+) -> None:
+    try:
+        decimal_amount = Decimal(str(amount))
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError(f"{field_name} must be a finite number") from exc
+
+    if not decimal_amount.is_finite():
+        raise ValueError(f"{field_name} must be a finite number")
+
+    if decimal_amount < 0 or (not allow_zero and decimal_amount == 0):
+        requirement = "non-negative" if allow_zero else "positive"
+        raise ValueError(f"{field_name} must be {requirement}")
+
+    if decimal_amount.as_tuple().exponent < -3:
+        raise ValueError(f"{field_name} must have at most 3 decimal places")
+
+    if abs(decimal_amount) > Decimal("9999999.999"):
+        raise ValueError(f"{field_name} must be <= 9999999.999")
 
 
 class LedgerFortress:
@@ -106,6 +146,7 @@ class LedgerFortress:
 
     def can_generate(self, account_id: str, amount: float) -> bool:
         """Check if an account can afford a generation. Pure read, no side effects."""
+        _assert_credit_amount(amount)
         result = self._query_scalar(
             "SELECT has_credits(%s, %s)", (account_id, amount)
         )
@@ -115,6 +156,13 @@ class LedgerFortress:
         """Get the current credit balance for an account."""
         result = self._query_scalar("SELECT get_balance(%s)", (account_id,))
         return float(result) if result is not None else 0.0
+
+    def get_plan_credits(self, variant_id: str) -> float | None:
+        """Look up credits configured for a Stripe Price ID."""
+        result = self._query_scalar(
+            "SELECT get_plan_credits(%s)", (variant_id,)
+        )
+        return float(result) if result is not None else None
 
     def reserve(
         self,
@@ -130,8 +178,7 @@ class LedgerFortress:
         Returns True if the reservation succeeded, False if insufficient balance.
         This is a single UPDATE ... WHERE tokens >= cost - no TOCTOU race.
         """
-        if amount <= 0:
-            raise ValueError("amount must be positive")
+        _assert_credit_amount(amount)
         result = self._query_scalar(
             "SELECT reserve_credits(%s, %s, %s, %s)",
             (account_id, amount, generation_id, model),
@@ -152,13 +199,40 @@ class LedgerFortress:
 
         Idempotent: second call for the same generation_id is a no-op.
         """
-        if amount <= 0:
-            raise ValueError("amount must be positive")
-        result = self._query_scalar(
-            "SELECT charge_credits(%s, %s, %s, %s)",
+        result = self.charge_detailed(
+            account_id=account_id,
+            generation_id=generation_id,
+            amount=amount,
+            model=model,
+        )
+        return result.charged
+
+    def charge_detailed(
+        self,
+        *,
+        account_id: str,
+        generation_id: str,
+        amount: float,
+        model: str | None = None,
+    ) -> ChargeResult:
+        """
+        Confirm a reservation and return structured status.
+
+        Use this when the application needs to distinguish duplicate/no-op
+        from a late charge shortfall recorded as uncollectible.
+        """
+        _assert_credit_amount(amount)
+        rows = self._query(
+            "SELECT * FROM charge_credits_detailed(%s, %s, %s, %s)",
             (account_id, amount, generation_id, model),
         )
-        return bool(result)
+        row = rows[0] if rows else {"status": "duplicate", "uncollectible": 0}
+        status = str(row.get("status") or "duplicate")
+        return ChargeResult(
+            status=status,
+            charged=status == "charged",
+            uncollectible=float(row.get("uncollectible") or 0),
+        )
 
     def refund(
         self,
@@ -173,12 +247,12 @@ class LedgerFortress:
 
         Guards:
         - If already charged ➜ no-op (prevents free output)
+        - If already settled via true-up ➜ no-op
         - If already refunded ➜ no-op (prevents double-refund)
 
         Idempotent: safe to call from webhooks, crash recovery, and cancel endpoints.
         """
-        if amount <= 0:
-            raise ValueError("amount must be positive")
+        _assert_credit_amount(amount)
         result = self._query_scalar(
             "SELECT refund_credits(%s, %s, %s, %s)",
             (account_id, amount, generation_id, model),
@@ -199,13 +273,77 @@ class LedgerFortress:
 
         Idempotent: safe to call from Stripe webhook retries.
         """
-        if amount <= 0:
-            raise ValueError("amount must be positive")
+        _assert_credit_amount(amount)
         result = self._query_scalar(
             "SELECT add_credits(%s, %s, %s, %s)",
             (account_id, amount, description, idempotency_key),
         )
         return bool(result)
+
+    def clawback(
+        self,
+        *,
+        account_id: str,
+        amount: float,
+        idempotency_key: str,
+        reason: str = "stripe_refund",
+    ) -> ClawbackResult:
+        """
+        Claw back credits from a Stripe refund or dispute.
+
+        Deducts from balance up to the available amount. Any shortfall is
+        recorded as uncollectible; balance never goes negative.
+        """
+        _assert_credit_amount(amount)
+        if not idempotency_key:
+            raise ValueError("idempotency_key is required")
+
+        rows = self._query(
+            "SELECT * FROM clawback_credits(%s, %s, %s, %s)",
+            (account_id, amount, idempotency_key, reason),
+        )
+        if not rows:
+            return ClawbackResult(applied=False, uncollectible=0.0)
+
+        row = rows[0]
+        return ClawbackResult(
+            applied=bool(row.get("applied")),
+            uncollectible=float(row.get("uncollectible") or 0),
+        )
+
+    def settle(
+        self,
+        *,
+        account_id: str,
+        generation_id: str,
+        reserved_amount: float,
+        actual_amount: float,
+        model: str | None = None,
+    ) -> bool:
+        """
+        Settle a variable-cost generation.
+
+        Reserve the maximum estimate first, then settle with the actual cost.
+        If actual < reserved, the difference is returned. If actual > reserved,
+        the overage is deducted or recorded as uncollectible.
+        """
+        _assert_credit_amount(reserved_amount, "reserved_amount")
+        _assert_credit_amount(actual_amount, "actual_amount", allow_zero=True)
+        if not generation_id:
+            raise ValueError("generation_id is required")
+
+        result = self._query_scalar(
+            "SELECT settle_credits(%s, %s, %s, %s, %s)",
+            (account_id, generation_id, reserved_amount, actual_amount, model),
+        )
+        return bool(result)
+
+    def get_uncollectible_total(self, account_id: str) -> float:
+        """Return total uncollectible shortfall for an account."""
+        result = self._query_scalar(
+            "SELECT get_uncollectible_total(%s)", (account_id,)
+        )
+        return float(result) if result is not None else 0.0
 
     def list_ledger(
         self,

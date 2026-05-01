@@ -96,9 +96,10 @@ reserved ➜ refunded
 reserved ➜ settled
 ```
 
-- `refund_credits` no-ops if the generation is already charged.
-- `charge_credits` re-checks prior refund state under lock.
-- `settle_credits` serializes the true-up path for that generation and can emit `trueup` and `uncollectible` entries when the actual cost differs from the reservation.
+- `refund_credits` no-ops if the generation is already charged or settled via true-up.
+- `charge_credits` re-checks prior refund state under lock and no-ops after true-up settlement.
+- `settle_credits` serializes the true-up path for that generation, can reconcile from a prior refund, and can emit `trueup` and `uncollectible` entries when the actual cost differs from the reservation.
+- `charge_credits`, `refund_credits`, and `settle_credits` require a matching `reserve` row for the same account and generation.
 - `FOR UPDATE` serialization prevents conflicting outcomes for the same generation.
 
 ## Fail-open ladder
@@ -106,7 +107,7 @@ reserved ➜ settled
 | Failure | Behavior |
 |---|---|
 | Stripe delayed | Reserved credits already gate generation; reconciliation happens later |
-| Provider callback delayed | Reservation remains in place until charge, refund, or crash recovery resolves it |
+| Provider callback delayed | Reservation remains in place until charge, refund, true-up, or crash recovery resolves it |
 | Crash recovery misses a cycle | The orphan waits for the next run; no balance corruption occurs |
 | Alert delivery fails | Alert checks are fire-and-forget and retried on later reservations |
 | Duplicate webhook or retry | Unique partial indexes convert the replay into a no-op |

@@ -1,39 +1,41 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
 import { LedgerFortress } from '../src/index.js';
 
 // Mock pg.Pool to test SDK logic without a real database.
+const mockPool = vi.hoisted(() => ({
+  query: vi.fn(),
+  end: vi.fn(),
+  on: vi.fn(),
+}));
+
 vi.mock('pg', () => {
-  const mockQuery = vi.fn();
-  const mockEnd = vi.fn();
   return {
     default: {
       Pool: vi.fn(() => ({
-        query: mockQuery,
-        end: mockEnd,
+        query: mockPool.query,
+        end: mockPool.end,
+        on: mockPool.on,
       })),
     },
     Pool: vi.fn(() => ({
-      query: mockQuery,
-      end: mockEnd,
+      query: mockPool.query,
+      end: mockPool.end,
+      on: mockPool.on,
     })),
   };
 });
 
-function getMockPool() {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const pg = require('pg');
-  const instance = new pg.Pool();
-  return instance;
-}
-
 describe('LedgerFortress', () => {
   let fortress: LedgerFortress;
-  let mockPool: { query: ReturnType<typeof vi.fn>; end: ReturnType<typeof vi.fn> };
 
   beforeEach(() => {
-    vi.clearAllMocks();
-    fortress = new LedgerFortress({ databaseUrl: 'postgresql://test:test@localhost/test' });
-    mockPool = getMockPool();
+    mockPool.query.mockReset();
+    mockPool.end.mockReset();
+    mockPool.on.mockReset();
+    fortress = new LedgerFortress({
+      databaseUrl: 'postgresql://test:test@localhost/test',
+    });
   });
 
   describe('canGenerate', () => {
@@ -54,9 +56,35 @@ describe('LedgerFortress', () => {
     });
   });
 
+  describe('getPlanCredits', () => {
+    it('returns configured credits for a Stripe Price ID', async () => {
+      mockPool.query.mockResolvedValueOnce({
+        rows: [{ get_plan_credits: '29.000' }],
+      });
+
+      const result = await fortress.getPlanCredits('price_123');
+
+      expect(result).toBe(29);
+      expect(mockPool.query).toHaveBeenCalledWith(
+        'SELECT get_plan_credits($1) AS get_plan_credits',
+        ['price_123'],
+      );
+    });
+
+    it('returns null when a Stripe Price ID is not configured', async () => {
+      mockPool.query.mockResolvedValueOnce({ rows: [] });
+
+      const result = await fortress.getPlanCredits('price_missing');
+
+      expect(result).toBeNull();
+    });
+  });
+
   describe('reserve', () => {
     it('returns true on successful reservation', async () => {
-      mockPool.query.mockResolvedValueOnce({ rows: [{ reserve_credits: true }] });
+      mockPool.query.mockResolvedValueOnce({
+        rows: [{ reserve_credits: true }],
+      });
       const result = await fortress.reserve({
         accountId: 'acct_123',
         generationId: 'gen_abc',
@@ -71,18 +99,44 @@ describe('LedgerFortress', () => {
     });
 
     it('returns false when balance insufficient', async () => {
-      mockPool.query.mockResolvedValueOnce({ rows: [{ reserve_credits: false }] });
+      mockPool.query.mockResolvedValueOnce({
+        rows: [{ reserve_credits: false }],
+      });
       const result = await fortress.reserve({
         accountId: 'acct_123',
         amount: 1000,
       });
       expect(result).toBe(false);
     });
+
+    it('rejects amounts with more than three decimals', async () => {
+      await expect(
+        fortress.reserve({
+          accountId: 'acct_123',
+          generationId: 'gen_precise',
+          amount: 0.0625,
+        }),
+      ).rejects.toThrow('at most 3 decimal places');
+      expect(mockPool.query).not.toHaveBeenCalled();
+    });
+
+    it('rejects amounts outside NUMERIC(10,3) range', async () => {
+      await expect(
+        fortress.reserve({
+          accountId: 'acct_123',
+          generationId: 'gen_huge',
+          amount: 10_000_000,
+        }),
+      ).rejects.toThrow('9999999.999');
+      expect(mockPool.query).not.toHaveBeenCalled();
+    });
   });
 
   describe('charge', () => {
     it('confirms a reservation', async () => {
-      mockPool.query.mockResolvedValueOnce({ rows: [{ charge_credits: true }] });
+      mockPool.query.mockResolvedValueOnce({
+        rows: [{ status: 'charged', uncollectible: '0' }],
+      });
       const result = await fortress.charge({
         accountId: 'acct_123',
         generationId: 'gen_abc',
@@ -90,10 +144,16 @@ describe('LedgerFortress', () => {
         model: 'flux-schnell',
       });
       expect(result).toBe(true);
+      expect(mockPool.query).toHaveBeenCalledWith(
+        'SELECT * FROM charge_credits_detailed($1, $2, $3, $4)',
+        ['acct_123', 0.062, 'gen_abc', 'flux-schnell'],
+      );
     });
 
     it('returns false for duplicate charge (idempotent)', async () => {
-      mockPool.query.mockResolvedValueOnce({ rows: [{ charge_credits: false }] });
+      mockPool.query.mockResolvedValueOnce({
+        rows: [{ status: 'duplicate', uncollectible: '0' }],
+      });
       const result = await fortress.charge({
         accountId: 'acct_123',
         generationId: 'gen_abc',
@@ -101,11 +161,31 @@ describe('LedgerFortress', () => {
       });
       expect(result).toBe(false);
     });
+
+    it('returns structured shortfall status for late charge debt', async () => {
+      mockPool.query.mockResolvedValueOnce({
+        rows: [{ status: 'shortfall', uncollectible: '0.300' }],
+      });
+
+      const result = await fortress.chargeDetailed({
+        accountId: 'acct_123',
+        generationId: 'gen_late',
+        amount: 0.5,
+      });
+
+      expect(result).toEqual({
+        status: 'shortfall',
+        charged: false,
+        uncollectible: 0.3,
+      });
+    });
   });
 
   describe('refund', () => {
     it('returns credits on failure', async () => {
-      mockPool.query.mockResolvedValueOnce({ rows: [{ refund_credits: true }] });
+      mockPool.query.mockResolvedValueOnce({
+        rows: [{ refund_credits: true }],
+      });
       const result = await fortress.refund({
         accountId: 'acct_123',
         generationId: 'gen_abc',
@@ -115,7 +195,9 @@ describe('LedgerFortress', () => {
     });
 
     it('returns false if already charged (guard 1)', async () => {
-      mockPool.query.mockResolvedValueOnce({ rows: [{ refund_credits: false }] });
+      mockPool.query.mockResolvedValueOnce({
+        rows: [{ refund_credits: false }],
+      });
       const result = await fortress.refund({
         accountId: 'acct_123',
         generationId: 'gen_abc',
@@ -146,6 +228,40 @@ describe('LedgerFortress', () => {
         idempotencyKey: 'invoice:inv_xxx',
       });
       expect(result).toBe(false);
+    });
+  });
+
+  describe('clawback', () => {
+    it('returns applied and uncollectible amount', async () => {
+      mockPool.query.mockResolvedValueOnce({
+        rows: [{ applied: true, uncollectible: '38.000' }],
+      });
+
+      const result = await fortress.clawback({
+        accountId: 'acct_123',
+        amount: 50,
+        idempotencyKey: 'refund:re_123',
+      });
+
+      expect(result).toEqual({ applied: true, uncollectible: 38 });
+      expect(mockPool.query).toHaveBeenCalledWith(
+        'SELECT * FROM clawback_credits($1, $2, $3, $4)',
+        ['acct_123', 50, 'refund:re_123', 'stripe_refund'],
+      );
+    });
+
+    it('returns applied false for duplicate clawback events', async () => {
+      mockPool.query.mockResolvedValueOnce({
+        rows: [{ applied: false, uncollectible: '0' }],
+      });
+
+      const result = await fortress.clawback({
+        accountId: 'acct_123',
+        amount: 50,
+        idempotencyKey: 'refund:re_123',
+      });
+
+      expect(result).toEqual({ applied: false, uncollectible: 0 });
     });
   });
 

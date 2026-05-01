@@ -7,7 +7,6 @@
  * Copyright 2026 BabySea, Inc.
  * Licensed under the Apache License, Version 2.0.
  */
-
 import pg from 'pg';
 
 // ---------------------------------------------------------------------------
@@ -35,6 +34,23 @@ export interface ChargeInput {
   model?: string;
 }
 
+export type ChargeStatus =
+  | 'charged'
+  | 'duplicate'
+  | 'missing_reserve'
+  | 'missing_account'
+  | 'already_settled'
+  | 'shortfall';
+
+export interface ChargeResult {
+  /** Structured status from `charge_credits_detailed()`. */
+  status: ChargeStatus;
+  /** True only when the charge fully settled with no shortfall. */
+  charged: boolean;
+  /** Shortfall recorded as `uncollectible` for `status === 'shortfall'`. */
+  uncollectible: number;
+}
+
 export interface RefundInput {
   accountId: string;
   generationId: string;
@@ -49,9 +65,18 @@ export interface AddCreditsInput {
   idempotencyKey?: string;
 }
 
+export type CreditEventType =
+  | 'reserve'
+  | 'charge'
+  | 'refund'
+  | 'add'
+  | 'clawback'
+  | 'trueup'
+  | 'uncollectible';
+
 export interface LedgerEntry {
   id: string;
-  type: 'reserve' | 'charge' | 'refund' | 'add';
+  type: CreditEventType;
   amount: number;
   balanceAfter: number;
   generationId: string | null;
@@ -95,7 +120,7 @@ export interface CreditEvent {
   schema_version: 'credit-event.v1';
   event_id: string;
   account_id: string;
-  type: 'reserve' | 'charge' | 'refund' | 'add' | 'clawback' | 'trueup' | 'uncollectible';
+  type: CreditEventType;
   amount: number;
   balance_after: number;
   generation_id: string | null;
@@ -113,7 +138,7 @@ export interface ClawbackInput {
 }
 
 export interface ClawbackResult {
-  /** True if clawback was applied (false if duplicate). */
+  /** True if a new clawback was applied; false for duplicate idempotency keys. */
   applied: boolean;
   /** Amount that could not be deducted because balance was insufficient. */
   uncollectible: number;
@@ -127,6 +152,33 @@ export interface SettleInput {
   /** The actual cost that the model returned. May be lower or higher than reserved. */
   actualAmount: number;
   model?: string;
+}
+
+function assertCreditAmount(
+  amount: number,
+  fieldName = 'amount',
+  options?: { allowZero?: boolean },
+): void {
+  if (!Number.isFinite(amount)) {
+    throw new Error(`ledger-fortress: ${fieldName} must be a finite number`);
+  }
+
+  if (options?.allowZero ? amount < 0 : amount <= 0) {
+    throw new Error(
+      `ledger-fortress: ${fieldName} must be ${options?.allowZero ? 'non-negative' : 'positive'}`,
+    );
+  }
+
+  const scaled = amount * 1000;
+  if (Math.abs(scaled - Math.round(scaled)) > 1e-9) {
+    throw new Error(
+      `ledger-fortress: ${fieldName} must have at most 3 decimal places`,
+    );
+  }
+
+  if (Math.abs(amount) > 9_999_999.999) {
+    throw new Error(`ledger-fortress: ${fieldName} must be <= 9999999.999`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -165,6 +217,7 @@ export class LedgerFortress {
    * Pure read, no side effects.
    */
   async canGenerate(accountId: string, amount: number): Promise<boolean> {
+    assertCreditAmount(amount);
     const result = await this.pool.query<{ has_credits: boolean }>(
       'SELECT has_credits($1, $2) AS has_credits',
       [accountId, amount],
@@ -184,18 +237,34 @@ export class LedgerFortress {
   }
 
   /**
+   * Look up the configured credit allocation for a Stripe Price ID.
+   * Useful from custom Stripe webhook credit resolvers.
+   */
+  async getPlanCredits(variantId: string): Promise<number | null> {
+    const result = await this.pool.query<{ get_plan_credits: string | null }>(
+      'SELECT get_plan_credits($1) AS get_plan_credits',
+      [variantId],
+    );
+    const tokens = result.rows[0]?.get_plan_credits;
+    return tokens === null || tokens === undefined ? null : parseFloat(tokens);
+  }
+
+  /**
    * Atomically reserve credits for a generation.
    * Returns true if the reservation succeeded, false if insufficient balance.
    *
    * This is a single `UPDATE ... WHERE tokens >= cost` - no TOCTOU race.
    */
   async reserve(input: ReserveInput): Promise<boolean> {
-    if (input.amount <= 0) {
-      throw new Error('ledger-fortress: amount must be positive');
-    }
+    assertCreditAmount(input.amount);
     const result = await this.pool.query<{ reserve_credits: boolean }>(
       'SELECT reserve_credits($1, $2, $3, $4) AS reserve_credits',
-      [input.accountId, input.amount, input.generationId ?? null, input.model ?? null],
+      [
+        input.accountId,
+        input.amount,
+        input.generationId ?? null,
+        input.model ?? null,
+      ],
     );
     return result.rows[0]?.reserve_credits ?? false;
   }
@@ -207,14 +276,33 @@ export class LedgerFortress {
    * Idempotent: second call for the same generation_id is a no-op.
    */
   async charge(input: ChargeInput): Promise<boolean> {
-    if (input.amount <= 0) {
-      throw new Error('ledger-fortress: amount must be positive');
-    }
-    const result = await this.pool.query<{ charge_credits: boolean }>(
-      'SELECT charge_credits($1, $2, $3, $4) AS charge_credits',
-      [input.accountId, input.amount, input.generationId, input.model ?? null],
-    );
-    return result.rows[0]?.charge_credits ?? false;
+    const result = await this.chargeDetailed(input);
+    return result.charged;
+  }
+
+  /**
+   * Confirm a reservation and return structured status.
+   * Use this when the application needs to distinguish duplicate/no-op from
+   * a late charge shortfall that was recorded as `uncollectible`.
+   */
+  async chargeDetailed(input: ChargeInput): Promise<ChargeResult> {
+    assertCreditAmount(input.amount);
+    const result = await this.pool.query<{
+      status: ChargeStatus;
+      uncollectible: string;
+    }>('SELECT * FROM charge_credits_detailed($1, $2, $3, $4)', [
+      input.accountId,
+      input.amount,
+      input.generationId,
+      input.model ?? null,
+    ]);
+    const row = result.rows[0];
+    const status = row?.status ?? 'duplicate';
+    return {
+      status,
+      charged: status === 'charged',
+      uncollectible: parseFloat(row?.uncollectible ?? '0'),
+    };
   }
 
   /**
@@ -222,14 +310,13 @@ export class LedgerFortress {
    *
    * Guards:
    * - If already charged ➜ no-op (prevents free output)
+   * - If already settled via true-up ➜ no-op
    * - If already refunded ➜ no-op (prevents double-refund)
    *
    * Idempotent: safe to call from webhooks, crash recovery, and cancel endpoints.
    */
   async refund(input: RefundInput): Promise<boolean> {
-    if (input.amount <= 0) {
-      throw new Error('ledger-fortress: amount must be positive');
-    }
+    assertCreditAmount(input.amount);
     const result = await this.pool.query<{ refund_credits: boolean }>(
       'SELECT refund_credits($1, $2, $3, $4) AS refund_credits',
       [input.accountId, input.amount, input.generationId, input.model ?? null],
@@ -244,12 +331,15 @@ export class LedgerFortress {
    * Idempotent: safe to call from Stripe webhook retries.
    */
   async addCredits(input: AddCreditsInput): Promise<boolean> {
-    if (input.amount <= 0) {
-      throw new Error('ledger-fortress: amount must be positive');
-    }
+    assertCreditAmount(input.amount);
     const result = await this.pool.query<{ add_credits: boolean }>(
       'SELECT add_credits($1, $2, $3, $4) AS add_credits',
-      [input.accountId, input.amount, input.description, input.idempotencyKey ?? null],
+      [
+        input.accountId,
+        input.amount,
+        input.description,
+        input.idempotencyKey ?? null,
+      ],
     );
     return result.rows[0]?.add_credits ?? false;
   }
@@ -267,20 +357,23 @@ export class LedgerFortress {
    * accounts that owe money.
    */
   async clawback(input: ClawbackInput): Promise<ClawbackResult> {
-    if (input.amount <= 0) {
-      throw new Error('ledger-fortress: amount must be positive');
-    }
+    assertCreditAmount(input.amount);
     if (!input.idempotencyKey) {
       throw new Error('ledger-fortress: idempotencyKey is required');
     }
-    const result = await this.pool.query<{ clawback_credits: string }>(
-      'SELECT clawback_credits($1, $2, $3, $4) AS clawback_credits',
-      [input.accountId, input.amount, input.idempotencyKey, input.reason ?? 'stripe_refund'],
-    );
-    const uncollectible = parseFloat(result.rows[0]?.clawback_credits ?? '0');
+    const result = await this.pool.query<{
+      applied: boolean;
+      uncollectible: string;
+    }>('SELECT * FROM clawback_credits($1, $2, $3, $4)', [
+      input.accountId,
+      input.amount,
+      input.idempotencyKey,
+      input.reason ?? 'stripe_refund',
+    ]);
+    const row = result.rows[0];
     return {
-      applied: true,
-      uncollectible,
+      applied: row?.applied ?? false,
+      uncollectible: parseFloat(row?.uncollectible ?? '0'),
     };
   }
 
@@ -298,9 +391,8 @@ export class LedgerFortress {
    * same generation.
    */
   async settle(input: SettleInput): Promise<boolean> {
-    if (input.reservedAmount < 0 || input.actualAmount < 0) {
-      throw new Error('ledger-fortress: reservedAmount and actualAmount must be non-negative');
-    }
+    assertCreditAmount(input.reservedAmount, 'reservedAmount');
+    assertCreditAmount(input.actualAmount, 'actualAmount', { allowZero: true });
     if (!input.generationId) {
       throw new Error('ledger-fortress: generationId is required');
     }
@@ -336,12 +428,23 @@ export class LedgerFortress {
    */
   async listLedger(
     accountId: string,
-    options?: { type?: string; limit?: number; offset?: number },
+    options?: { type?: CreditEventType; limit?: number; offset?: number },
   ): Promise<LedgerEntry[]> {
-    const result = await this.pool.query(
-      'SELECT * FROM list_credit_ledger($1, $2, $3, $4)',
-      [accountId, options?.type ?? null, options?.limit ?? 50, options?.offset ?? 0],
-    );
+    const result = await this.pool.query<{
+      id: string;
+      type: CreditEventType;
+      amount: string;
+      balance_after: string;
+      generation_id: string | null;
+      model: string | null;
+      description: string | null;
+      created_at: Date | string;
+    }>('SELECT * FROM list_credit_ledger($1, $2, $3, $4)', [
+      accountId,
+      options?.type ?? null,
+      options?.limit ?? 50,
+      options?.offset ?? 0,
+    ]);
     return result.rows.map((row) => ({
       id: row.id,
       type: row.type,
@@ -377,7 +480,10 @@ export class LedgerFortress {
       amount: string;
       model: string | null;
       reserved_at: Date;
-    }>('SELECT * FROM find_orphaned_reservations($1, $2)', [windowMinutes, limit]);
+    }>('SELECT * FROM find_orphaned_reservations($1, $2)', [
+      windowMinutes,
+      limit,
+    ]);
 
     let refunded = 0;
     let errors = 0;
@@ -419,10 +525,10 @@ export class LedgerFortress {
    */
   async checkAlerts(accountId: string): Promise<AlertThreshold[]> {
     try {
-      const result = await this.pool.query<{ threshold: string; balance: string }>(
-        'SELECT * FROM check_credit_alerts($1)',
-        [accountId],
-      );
+      const result = await this.pool.query<{
+        threshold: string;
+        balance: string;
+      }>('SELECT * FROM check_credit_alerts($1)', [accountId]);
       return result.rows.map((row) => ({
         threshold: parseFloat(row.threshold),
         balance: parseFloat(row.balance),
@@ -495,9 +601,7 @@ export class LedgerFortress {
   /**
    * Build a CreditEvent payload conforming to credit-event.v1.json schema.
    */
-  buildEvent(
-    entry: LedgerEntry & { accountId: string },
-  ): CreditEvent {
+  buildEvent(entry: LedgerEntry & { accountId: string }): CreditEvent {
     return {
       schema_version: 'credit-event.v1',
       event_id: entry.id,

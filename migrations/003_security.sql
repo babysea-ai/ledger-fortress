@@ -16,8 +16,9 @@
 -- ============================================================================
 -- ENABLE ROW LEVEL SECURITY
 --
--- All tables are RLS-enabled with NO policies = deny-all to anon/authenticated.
--- Only the service role (and direct Postgres connections) can read/write.
+-- All tables are RLS-enabled with NO client policies = deny-all to
+-- anon/authenticated. Only your backend role (or the SECURITY DEFINER function
+-- owner) should be able to read/write.
 --
 -- Why no per-account RLS policies?
 --   ledger-fortress is a backend library. Your application enforces
@@ -32,19 +33,17 @@ ALTER TABLE credit_ledger          ENABLE ROW LEVEL SECURITY;
 ALTER TABLE credit_alert_settings  ENABLE ROW LEVEL SECURITY;
 ALTER TABLE credit_alert_log       ENABLE ROW LEVEL SECURITY;
 
--- Force RLS for table owners too. By default, table owners bypass RLS.
--- This ensures even a leaked owner role cannot bypass policies.
-ALTER TABLE plans                  FORCE ROW LEVEL SECURITY;
-ALTER TABLE credits                FORCE ROW LEVEL SECURITY;
-ALTER TABLE credit_ledger          FORCE ROW LEVEL SECURITY;
-ALTER TABLE credit_alert_settings  FORCE ROW LEVEL SECURITY;
-ALTER TABLE credit_alert_log       FORCE ROW LEVEL SECURITY;
-
 COMMENT ON TABLE plans IS 'RLS deny-all. Access only via service-role or direct connection.';
 COMMENT ON TABLE credits IS 'RLS deny-all. Tamper-proof balance, write only via fortress functions.';
 COMMENT ON TABLE credit_ledger IS 'RLS deny-all. Immutable audit trail, write only via fortress functions.';
 COMMENT ON TABLE credit_alert_settings IS 'RLS deny-all. Manage via fortress.setAlertSettings().';
 COMMENT ON TABLE credit_alert_log IS 'RLS deny-all. Internal state machine.';
+
+-- Portability note: do not FORCE RLS here. On plain Postgres, SECURITY DEFINER
+-- functions commonly run as the table owner; FORCE RLS would make that owner
+-- subject to deny-all policies and break the SDK unless the owner has BYPASSRLS.
+-- If your deployment uses a dedicated owner role with BYPASSRLS, you may add
+-- FORCE ROW LEVEL SECURITY in your own hardening migration.
 
 -- ============================================================================
 -- REVOKE PRIVILEGES from anon and authenticated roles
@@ -98,23 +97,43 @@ ALTER FUNCTION upsert_credit_alert_settings(UUID, BOOLEAN, NUMERIC[], BOOLEAN, B
 -- Read-only functions: SECURITY INVOKER (default) is fine, but lock search_path.
 ALTER FUNCTION has_credits(UUID, NUMERIC)                        SET search_path = pg_catalog, public;
 ALTER FUNCTION get_balance(UUID)                                 SET search_path = pg_catalog, public;
+ALTER FUNCTION get_plan_credits(TEXT)                            SECURITY DEFINER SET search_path = pg_catalog, public;
 ALTER FUNCTION list_credit_ledger(UUID, TEXT, INT, INT)          SET search_path = pg_catalog, public;
 ALTER FUNCTION find_orphaned_reservations(INT, INT)              SET search_path = pg_catalog, public;
 ALTER FUNCTION get_credit_alert_settings(UUID)                   SET search_path = pg_catalog, public;
 ALTER FUNCTION trg_validate_thresholds()                         SET search_path = pg_catalog, public;
+ALTER FUNCTION lf_validate_credit_amount(NUMERIC, TEXT, BOOLEAN) SET search_path = pg_catalog, public;
 
 -- ============================================================================
--- REVOKE function execute from anon
+-- REVOKE function execute from PUBLIC/client roles
 --
--- If you want to expose any read-only function to anon (for status pages, etc.),
--- explicitly GRANT it after this migration. Default is deny.
+-- PostgreSQL grants EXECUTE on functions to PUBLIC by default. In Supabase,
+-- anon/authenticated can inherit that unless PUBLIC is revoked. The fortress
+-- default is backend/service-role only; explicitly GRANT anything else after
+-- this migration if your deployment needs it.
 -- ============================================================================
+
+REVOKE EXECUTE ON FUNCTION has_credits(UUID, NUMERIC)                         FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION get_balance(UUID)                                  FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION get_plan_credits(TEXT)                             FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION reserve_credits(UUID, NUMERIC, TEXT, TEXT)         FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION charge_credits(UUID, NUMERIC, TEXT, TEXT)          FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION refund_credits(UUID, NUMERIC, TEXT, TEXT)          FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION add_credits(UUID, NUMERIC, TEXT, TEXT)             FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION list_credit_ledger(UUID, TEXT, INT, INT)           FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION find_orphaned_reservations(INT, INT)               FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION check_credit_alerts(UUID)                          FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION reset_credit_alerts(UUID)                          FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION get_credit_alert_settings(UUID)                    FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION upsert_credit_alert_settings(UUID, BOOLEAN, NUMERIC[], BOOLEAN, BOOLEAN, BOOLEAN) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION lf_validate_credit_amount(NUMERIC, TEXT, BOOLEAN)  FROM PUBLIC;
 
 DO $$
 BEGIN
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
     REVOKE EXECUTE ON FUNCTION has_credits(UUID, NUMERIC)                         FROM anon;
     REVOKE EXECUTE ON FUNCTION get_balance(UUID)                                  FROM anon;
+    REVOKE EXECUTE ON FUNCTION get_plan_credits(TEXT)                             FROM anon;
     REVOKE EXECUTE ON FUNCTION reserve_credits(UUID, NUMERIC, TEXT, TEXT)         FROM anon;
     REVOKE EXECUTE ON FUNCTION charge_credits(UUID, NUMERIC, TEXT, TEXT)          FROM anon;
     REVOKE EXECUTE ON FUNCTION refund_credits(UUID, NUMERIC, TEXT, TEXT)          FROM anon;
@@ -125,5 +144,40 @@ BEGIN
     REVOKE EXECUTE ON FUNCTION reset_credit_alerts(UUID)                          FROM anon;
     REVOKE EXECUTE ON FUNCTION get_credit_alert_settings(UUID)                    FROM anon;
     REVOKE EXECUTE ON FUNCTION upsert_credit_alert_settings(UUID, BOOLEAN, NUMERIC[], BOOLEAN, BOOLEAN, BOOLEAN) FROM anon;
+    REVOKE EXECUTE ON FUNCTION lf_validate_credit_amount(NUMERIC, TEXT, BOOLEAN)  FROM anon;
+  END IF;
+
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+    REVOKE EXECUTE ON FUNCTION has_credits(UUID, NUMERIC)                         FROM authenticated;
+    REVOKE EXECUTE ON FUNCTION get_balance(UUID)                                  FROM authenticated;
+    REVOKE EXECUTE ON FUNCTION get_plan_credits(TEXT)                             FROM authenticated;
+    REVOKE EXECUTE ON FUNCTION reserve_credits(UUID, NUMERIC, TEXT, TEXT)         FROM authenticated;
+    REVOKE EXECUTE ON FUNCTION charge_credits(UUID, NUMERIC, TEXT, TEXT)          FROM authenticated;
+    REVOKE EXECUTE ON FUNCTION refund_credits(UUID, NUMERIC, TEXT, TEXT)          FROM authenticated;
+    REVOKE EXECUTE ON FUNCTION add_credits(UUID, NUMERIC, TEXT, TEXT)             FROM authenticated;
+    REVOKE EXECUTE ON FUNCTION list_credit_ledger(UUID, TEXT, INT, INT)           FROM authenticated;
+    REVOKE EXECUTE ON FUNCTION find_orphaned_reservations(INT, INT)               FROM authenticated;
+    REVOKE EXECUTE ON FUNCTION check_credit_alerts(UUID)                          FROM authenticated;
+    REVOKE EXECUTE ON FUNCTION reset_credit_alerts(UUID)                          FROM authenticated;
+    REVOKE EXECUTE ON FUNCTION get_credit_alert_settings(UUID)                    FROM authenticated;
+    REVOKE EXECUTE ON FUNCTION upsert_credit_alert_settings(UUID, BOOLEAN, NUMERIC[], BOOLEAN, BOOLEAN, BOOLEAN) FROM authenticated;
+    REVOKE EXECUTE ON FUNCTION lf_validate_credit_amount(NUMERIC, TEXT, BOOLEAN)  FROM authenticated;
+  END IF;
+
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN
+    GRANT EXECUTE ON FUNCTION has_credits(UUID, NUMERIC)                         TO service_role;
+    GRANT EXECUTE ON FUNCTION get_balance(UUID)                                  TO service_role;
+    GRANT EXECUTE ON FUNCTION get_plan_credits(TEXT)                             TO service_role;
+    GRANT EXECUTE ON FUNCTION reserve_credits(UUID, NUMERIC, TEXT, TEXT)         TO service_role;
+    GRANT EXECUTE ON FUNCTION charge_credits(UUID, NUMERIC, TEXT, TEXT)          TO service_role;
+    GRANT EXECUTE ON FUNCTION refund_credits(UUID, NUMERIC, TEXT, TEXT)          TO service_role;
+    GRANT EXECUTE ON FUNCTION add_credits(UUID, NUMERIC, TEXT, TEXT)             TO service_role;
+    GRANT EXECUTE ON FUNCTION list_credit_ledger(UUID, TEXT, INT, INT)           TO service_role;
+    GRANT EXECUTE ON FUNCTION find_orphaned_reservations(INT, INT)               TO service_role;
+    GRANT EXECUTE ON FUNCTION check_credit_alerts(UUID)                          TO service_role;
+    GRANT EXECUTE ON FUNCTION reset_credit_alerts(UUID)                          TO service_role;
+    GRANT EXECUTE ON FUNCTION get_credit_alert_settings(UUID)                    TO service_role;
+    GRANT EXECUTE ON FUNCTION upsert_credit_alert_settings(UUID, BOOLEAN, NUMERIC[], BOOLEAN, BOOLEAN, BOOLEAN) TO service_role;
+    GRANT EXECUTE ON FUNCTION lf_validate_credit_amount(NUMERIC, TEXT, BOOLEAN)  TO service_role;
   END IF;
 END $$;

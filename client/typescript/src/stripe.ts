@@ -7,7 +7,6 @@
  * Copyright 2026 BabySea, Inc.
  * Licensed under the Apache License, Version 2.0.
  */
-
 import type { LedgerFortress } from './index.js';
 
 // Lazy import: stripe is a peer dependency. Only required if you call
@@ -15,7 +14,11 @@ import type { LedgerFortress } from './index.js';
 // of validated StripeEvent objects.
 type StripeLike = {
   webhooks: {
-    constructEvent: (payload: string | Buffer, header: string, secret: string) => unknown;
+    constructEvent: (
+      payload: string | Buffer,
+      header: string,
+      secret: string,
+    ) => unknown;
   };
 };
 
@@ -28,6 +31,24 @@ export interface StripeWebhookHandlerOptions {
   fortress: LedgerFortress;
   /** Map a Stripe customer ID to your account ID. */
   resolveAccountId: (customerId: string) => Promise<string | null>;
+  /** Optional: map a Stripe charge ID to your account ID for unexpanded dispute events. */
+  resolveChargeAccountId?: (chargeId: string) => Promise<string | null>;
+  /**
+   * Optional: override invoice-to-credit conversion.
+   * Return null/undefined to skip credit allocation for this invoice.
+   * Runs before the default amount_paid / 100 path, including zero-amount invoices.
+   */
+  resolveInvoiceCredits?: (
+    invoice: Record<string, unknown>,
+  ) => Promise<number | null | undefined>;
+  /**
+   * Optional: override checkout-session-to-credit conversion.
+   * Return null/undefined to skip credit allocation for this checkout.
+   * Runs before the default amount_total / 100 path, including zero-amount checkouts.
+   */
+  resolveCheckoutCredits?: (
+    session: Record<string, unknown>,
+  ) => Promise<number | null | undefined>;
   /**
    * Optional: check if an account has an active subscription.
    * Used to guard credit pack purchases (prevent stale checkout redemption).
@@ -72,6 +93,7 @@ export function createStripeWebhookHandler(
       case 'invoice.paid':
         return handleInvoicePaid(event, opts);
       case 'checkout.session.completed':
+      case 'checkout.session.async_payment_succeeded':
         return handleCheckoutCompleted(event, opts);
       case 'charge.refunded':
         return handleChargeRefunded(event, opts);
@@ -138,7 +160,11 @@ export function verifyStripeSignature(
   // Stripe's constructEvent throws on invalid signature.
   // It uses HMAC-SHA256 with timestamp tolerance (default 5 minutes)
   // to prevent replay attacks.
-  return stripe.webhooks.constructEvent(payload, signatureHeader, webhookSecret) as StripeEvent;
+  return stripe.webhooks.constructEvent(
+    payload,
+    signatureHeader,
+    webhookSecret,
+  ) as StripeEvent;
 }
 
 // ---------------------------------------------------------------------------
@@ -153,16 +179,20 @@ async function handleInvoicePaid(
 
   // Only handle subscription invoices (not manual invoices).
   const billingReason = invoice.billing_reason as string | undefined;
-  const subscriptionReasons = ['subscription_create', 'subscription_cycle', 'subscription_update'];
+  const subscriptionReasons = [
+    'subscription_create',
+    'subscription_cycle',
+    'subscription_update',
+  ];
   if (!billingReason || !subscriptionReasons.includes(billingReason)) {
     return { handled: false };
   }
 
   const customerId = invoice.customer as string;
   const invoiceId = invoice.id as string;
-  const amountPaid = invoice.amount_paid as number; // cents
+  const amountPaid = invoice.amount_paid as number | undefined; // cents
 
-  if (!customerId || !invoiceId || !amountPaid) {
+  if (!customerId || !invoiceId) {
     return { handled: false };
   }
 
@@ -171,8 +201,19 @@ async function handleInvoicePaid(
     return { handled: true, action: 'skipped_no_account' };
   }
 
-  // Convert cents to credits (1 credit = $1 = 100 cents).
-  const credits = amountPaid / 100;
+  // Convert cents to credits (1 credit = $1 = 100 cents) unless the adopter
+  // supplies a custom resolver for plan-token mapping or non-USD products.
+  const resolvedCredits = opts.resolveInvoiceCredits
+    ? await opts.resolveInvoiceCredits(invoice)
+    : typeof amountPaid === 'number' && amountPaid > 0
+      ? amountPaid / 100
+      : null;
+
+  if (!resolvedCredits || resolvedCredits <= 0) {
+    return { handled: true, action: 'skipped_unrelated' };
+  }
+
+  const credits = resolvedCredits;
   const idempotencyKey = `invoice:${invoiceId}`;
 
   const added = await opts.fortress.addCredits({
@@ -208,10 +249,15 @@ async function handleCheckoutCompleted(
   }
 
   const customerId = session.customer as string;
-  const amountTotal = session.amount_total as number; // cents
+  const amountTotal = session.amount_total as number | undefined; // cents
+  const paymentStatus = session.payment_status as string | undefined;
 
-  if (!customerId || !amountTotal) {
+  if (!customerId) {
     return { handled: false };
+  }
+
+  if (paymentStatus && paymentStatus !== 'paid') {
+    return { handled: true, action: 'skipped_unrelated' };
   }
 
   const accountId = await opts.resolveAccountId(customerId);
@@ -228,8 +274,19 @@ async function handleCheckoutCompleted(
   }
 
   // Use payment_intent or session id as idempotency key.
-  const paymentIntent = (session.payment_intent as string) || (session.id as string);
-  const credits = amountTotal / 100;
+  const paymentIntent =
+    (session.payment_intent as string) || (session.id as string);
+  const resolvedCredits = opts.resolveCheckoutCredits
+    ? await opts.resolveCheckoutCredits(session)
+    : typeof amountTotal === 'number' && amountTotal > 0
+      ? amountTotal / 100
+      : null;
+
+  if (!resolvedCredits || resolvedCredits <= 0) {
+    return { handled: true, action: 'skipped_unrelated' };
+  }
+
+  const credits = resolvedCredits;
   const idempotencyKey = `order:${paymentIntent}`;
 
   const added = await opts.fortress.addCredits({
@@ -257,7 +314,7 @@ async function handleCheckoutCompleted(
 
 /**
  * Stripe issues `charge.refunded` when a charge is fully or partially refunded.
- * We claw back credits proportionally to the refunded amount.
+ * We claw back credits for the latest individual refund object.
  *
  * Idempotent via the refund ID. If the refunded charge can't be mapped to an
  * account (no Stripe customer attached), we skip and log.
@@ -268,11 +325,12 @@ async function handleChargeRefunded(
 ): Promise<WebhookResult> {
   const charge = event.data.object;
   const customerId = charge.customer as string | null;
-  const amountRefunded = charge.amount_refunded as number; // cents
-  const refunds = charge.refunds as { data?: Array<{ id: string }> } | undefined;
-  const latestRefundId = refunds?.data?.[0]?.id ?? (charge.id as string);
+  const refunds = charge.refunds as
+    | { data?: Array<{ id: string; amount?: number }> }
+    | undefined;
+  const latestRefund = refunds?.data?.[0];
 
-  if (!customerId || !amountRefunded || amountRefunded <= 0) {
+  if (!customerId || !latestRefund?.id || !latestRefund.amount) {
     return { handled: true, action: 'skipped_unrelated' };
   }
 
@@ -281,8 +339,8 @@ async function handleChargeRefunded(
     return { handled: true, action: 'skipped_no_account' };
   }
 
-  const credits = amountRefunded / 100;
-  const idempotencyKey = `refund:${latestRefundId}`;
+  const credits = latestRefund.amount / 100;
+  const idempotencyKey = `refund:${latestRefund.id}`;
 
   const result = await opts.fortress.clawback({
     accountId,
@@ -290,6 +348,16 @@ async function handleChargeRefunded(
     idempotencyKey,
     reason: 'stripe_refund',
   });
+
+  if (!result.applied) {
+    return {
+      handled: true,
+      action: 'skipped_duplicate',
+      amount: credits,
+      uncollectible: result.uncollectible,
+      idempotencyKey,
+    };
+  }
 
   return {
     handled: true,
@@ -324,14 +392,19 @@ async function handleChargeDispute(
     typeof charge === 'object' && charge !== null
       ? (charge.customer as string | undefined)
       : undefined;
+  const chargeId = typeof charge === 'string' ? charge : undefined;
   const amount = dispute.amount as number; // cents
   const disputeId = dispute.id as string;
 
-  if (!customerId || !amount || amount <= 0 || !disputeId) {
+  if ((!customerId && !chargeId) || !amount || amount <= 0 || !disputeId) {
     return { handled: true, action: 'skipped_unrelated' };
   }
 
-  const accountId = await opts.resolveAccountId(customerId);
+  const accountId = customerId
+    ? await opts.resolveAccountId(customerId)
+    : opts.resolveChargeAccountId
+      ? await opts.resolveChargeAccountId(chargeId!)
+      : null;
   if (!accountId) {
     return { handled: true, action: 'skipped_no_account' };
   }
@@ -345,6 +418,16 @@ async function handleChargeDispute(
     idempotencyKey,
     reason: 'stripe_dispute',
   });
+
+  if (!result.applied) {
+    return {
+      handled: true,
+      action: 'skipped_duplicate',
+      amount: credits,
+      uncollectible: result.uncollectible,
+      idempotencyKey,
+    };
+  }
 
   return {
     handled: true,

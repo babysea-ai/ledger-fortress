@@ -10,10 +10,8 @@ docker compose up -d
 
 This gives you:
 
-- **PostgreSQL** on `localhost:5432` with `001_credits.sql` and `002_credit_alerts.sql` applied
+- **PostgreSQL** on `localhost:5432` with all four migrations applied
 - **DATABASE_URL**: `postgresql://fortress:fortress@localhost:5432/fortress`
-
-Apply `003_security.sql` and `004_clawback_and_trueup.sql` manually if you want the full production migration surface.
 
 ## Run the demo
 

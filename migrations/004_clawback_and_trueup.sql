@@ -29,16 +29,19 @@ ALTER TABLE credit_ledger
 
 -- ============================================================================
 -- RELAX credit_ledger.amount CHECK constraint
--- 'trueup' entries can be negative (extra deduction) so we allow != 0 for
--- trueup type, while keeping > 0 for all other types.
+-- 'trueup' entries can be negative (extra deduction), positive (refund), or
+-- zero (exact settlement). 'clawback' entries may be zero when the customer
+-- already spent every refunded/disputed credit; the shortfall is then logged as
+-- 'uncollectible'. All other types must stay positive.
 -- ============================================================================
 
 ALTER TABLE credit_ledger DROP CONSTRAINT IF EXISTS credit_ledger_amount_check;
 ALTER TABLE credit_ledger
   ADD CONSTRAINT credit_ledger_amount_check
   CHECK (
-    -- 'trueup' can be any value (positive = refund, negative = deduct, zero = no-op)
-    type = 'trueup' OR amount > 0
+    type = 'trueup'
+    OR (type = 'clawback' AND amount >= 0)
+    OR amount > 0
   );
 
 -- ============================================================================
@@ -70,8 +73,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_credit_ledger_trueup_idempotent
 --   "refund:{stripe_refund_id}"
 --   "dispute:{stripe_dispute_id}"
 --
--- Returns: the uncollectible amount (0 if fully clawed back).
+-- Returns: whether a new clawback was applied and the uncollectible amount
+--          (0 if fully clawed back or if this was a duplicate event).
 -- ============================================================================
+
+DROP FUNCTION IF EXISTS clawback_credits(UUID, NUMERIC, TEXT, TEXT);
 
 CREATE OR REPLACE FUNCTION clawback_credits(
   p_account_id      UUID,
@@ -79,7 +85,7 @@ CREATE OR REPLACE FUNCTION clawback_credits(
   p_idempotency_key TEXT,
   p_reason          TEXT DEFAULT 'stripe_refund'
 )
-RETURNS NUMERIC
+RETURNS TABLE (applied BOOLEAN, uncollectible NUMERIC)
 LANGUAGE plpgsql
 AS $$
 DECLARE
@@ -88,12 +94,17 @@ DECLARE
   v_uncollectible   NUMERIC;
   v_new_balance     NUMERIC;
 BEGIN
-  IF p_amount <= 0 THEN
-    RAISE EXCEPTION 'clawback_credits: amount must be positive';
-  END IF;
+  p_amount := lf_validate_credit_amount(p_amount, 'clawback_credits');
+
   IF p_idempotency_key IS NULL OR p_idempotency_key = '' THEN
     RAISE EXCEPTION 'clawback_credits: idempotency_key is required';
   END IF;
+
+  -- Ensure there is a row to lock. This serializes clawbacks even when a
+  -- refund/dispute arrives for an account that has already spent every credit.
+  INSERT INTO credits (account_id, tokens, updated_at)
+  VALUES (p_account_id, 0, NOW())
+  ON CONFLICT (account_id) DO NOTHING;
 
   -- Serialize and lock the account row.
   PERFORM 1 FROM credits WHERE account_id = p_account_id FOR UPDATE;
@@ -105,7 +116,10 @@ BEGIN
       AND description = p_idempotency_key
       AND type = 'clawback'
   ) THEN
-    RETURN 0;  -- idempotent no-op
+    applied := FALSE;
+    uncollectible := 0;
+    RETURN NEXT;  -- idempotent no-op
+    RETURN;
   END IF;
 
   -- Read current balance (default 0 if account never received credits).
@@ -139,7 +153,10 @@ BEGIN
       SET tokens = tokens + v_clawed_back, updated_at = NOW()
       WHERE account_id = p_account_id;
     END IF;
-    RETURN 0;
+    applied := FALSE;
+    uncollectible := 0;
+    RETURN NEXT;
+    RETURN;
   END;
 
   -- Log uncollectible amount separately if any.
@@ -154,11 +171,13 @@ BEGIN
     );
   END IF;
 
-  RETURN v_uncollectible;
+  applied := TRUE;
+  uncollectible := v_uncollectible;
+  RETURN NEXT;
 END;
 $$;
 
-COMMENT ON FUNCTION clawback_credits IS 'Clawback credits from a Stripe refund or dispute. Returns the uncollectible amount.';
+COMMENT ON FUNCTION clawback_credits IS 'Clawback credits from a Stripe refund or dispute. Returns applied flag and uncollectible amount.';
 
 -- ============================================================================
 -- FUNCTION: settle_credits(account_id, generation_id, reserved, actual, model)
@@ -195,17 +214,37 @@ DECLARE
   v_delta          NUMERIC;       -- reserved - actual: positive = refund, negative = re-deduct
   v_extra_needed   NUMERIC;
   v_can_deduct     NUMERIC;
-  v_uncollectible  NUMERIC;
+  v_uncollectible  NUMERIC := 0;
+  v_applied_deduct NUMERIC := 0;
+  v_already_refunded BOOLEAN;
+  v_reserved_amount NUMERIC;
 BEGIN
   IF p_generation_id IS NULL OR p_generation_id = '' THEN
     RAISE EXCEPTION 'settle_credits: generation_id is required';
   END IF;
-  IF p_reserved < 0 OR p_actual < 0 THEN
-    RAISE EXCEPTION 'settle_credits: reserved and actual must be non-negative';
-  END IF;
+
+  p_reserved := lf_validate_credit_amount(p_reserved, 'settle_credits: reserved');
+  p_actual := lf_validate_credit_amount(p_actual, 'settle_credits: actual', TRUE);
 
   -- Serialize concurrent operations on the same account.
   PERFORM 1 FROM credits WHERE account_id = p_account_id FOR UPDATE;
+
+  -- A settlement closes an existing reservation. Without this guard, a caller
+  -- could accidentally mint credits via true-down without a prior reserve.
+  SELECT amount INTO v_reserved_amount
+  FROM credit_ledger
+  WHERE account_id = p_account_id
+    AND generation_id = p_generation_id
+    AND type = 'reserve'
+  LIMIT 1;
+
+  IF NOT FOUND THEN
+    RETURN FALSE;
+  END IF;
+
+  IF p_reserved <> v_reserved_amount THEN
+    RAISE EXCEPTION 'settle_credits: reserved amount % does not match ledger reserve amount % for generation_id %', p_reserved, v_reserved_amount, p_generation_id;
+  END IF;
 
   -- Idempotency check: already settled?
   IF EXISTS (
@@ -224,7 +263,20 @@ BEGIN
     RAISE EXCEPTION 'settle_credits: generation_id % already has a charge entry; use only one of charge_credits or settle_credits per generation', p_generation_id;
   END IF;
 
-  v_delta := p_reserved - p_actual;
+  -- If crash recovery or a failure callback already refunded the reservation,
+  -- reconcile from that refunded baseline by deducting the actual cost. Without
+  -- this branch, settle would only deduct the overage and undercharge late
+  -- success callbacks that arrive after recovery.
+  v_already_refunded := EXISTS (
+    SELECT 1 FROM credit_ledger
+    WHERE generation_id = p_generation_id AND type = 'refund'
+  );
+
+  IF v_already_refunded THEN
+    v_delta := -p_actual;
+  ELSE
+    v_delta := v_reserved_amount - p_actual;
+  END IF;
 
   IF v_delta > 0 THEN
     -- True-down: actual was less than reserved, return the difference.
@@ -260,13 +312,9 @@ BEGIN
         WHERE account_id = p_account_id
         RETURNING tokens INTO v_balance;
       END IF;
-
-      -- Log the uncollectible portion for audit.
-      INSERT INTO credit_ledger (account_id, type, amount, balance_after, generation_id, model, description)
-      VALUES (
-        p_account_id, 'uncollectible', v_uncollectible, v_balance, p_generation_id, p_model,
-        'trueup_shortfall:' || p_generation_id
-      );
+      v_applied_deduct := v_can_deduct;
+    ELSE
+      v_applied_deduct := v_extra_needed;
     END IF;
 
   ELSE
@@ -288,23 +336,213 @@ BEGIN
       v_balance,
       p_generation_id,
       p_model,
-      'actual=' || p_actual || ',reserved=' || p_reserved
+      'actual=' || p_actual || ',reserved=' || v_reserved_amount ||
+        CASE WHEN v_already_refunded THEN ',baseline=refunded' ELSE ',baseline=reserved' END
     );
   EXCEPTION WHEN unique_violation THEN
     -- Concurrent settlement won the race. Roll back balance change.
     IF v_delta > 0 THEN
       UPDATE credits SET tokens = tokens - v_delta, updated_at = NOW() WHERE account_id = p_account_id;
-    ELSIF v_delta < 0 THEN
-      UPDATE credits SET tokens = tokens + (-v_delta) WHERE account_id = p_account_id;
+    ELSIF v_delta < 0 AND v_applied_deduct > 0 THEN
+      UPDATE credits SET tokens = tokens + v_applied_deduct, updated_at = NOW() WHERE account_id = p_account_id;
     END IF;
     RETURN FALSE;
   END;
+
+  -- Log the uncollectible portion only after the terminal true-up row exists.
+  IF v_uncollectible > 0 THEN
+    INSERT INTO credit_ledger (account_id, type, amount, balance_after, generation_id, model, description)
+    VALUES (
+      p_account_id, 'uncollectible', v_uncollectible, v_balance, p_generation_id, p_model,
+      'trueup_shortfall:' || p_generation_id
+    );
+  END IF;
 
   RETURN TRUE;
 END;
 $$;
 
 COMMENT ON FUNCTION settle_credits IS 'Variable-cost settlement: reserve max, settle actual. Idempotent per generation.';
+
+-- ============================================================================
+-- FUNCTION: charge_credits_detailed(account_id, tokens, generation_id, model)
+--
+-- Override the core charge function now that migration 004 adds the
+-- 'uncollectible' ledger type. If a late success callback arrives after a
+-- refund/crash-recovery path and the account no longer has enough balance,
+-- charge_credits_detailed records a durable terminal charge plus an
+-- uncollectible shortfall and returns status='shortfall'.
+-- ============================================================================
+
+CREATE OR REPLACE FUNCTION charge_credits_detailed(
+  p_account_id    UUID,
+  p_tokens        NUMERIC,
+  p_generation_id TEXT,
+  p_model         TEXT DEFAULT NULL
+)
+RETURNS TABLE (status TEXT, uncollectible NUMERIC)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  v_balance            NUMERIC;
+  v_already_refunded   BOOLEAN;
+  v_reserved_amount    NUMERIC;
+  v_can_deduct         NUMERIC := 0;
+  v_uncollectible      NUMERIC := 0;
+  v_charge_description TEXT;
+BEGIN
+  IF p_generation_id IS NULL THEN
+    RAISE EXCEPTION 'charge_credits_detailed: generation_id is required';
+  END IF;
+
+  p_tokens := lf_validate_credit_amount(p_tokens, 'charge_credits_detailed');
+
+  -- Serialize concurrent operations on the same account.
+  -- Prevents the charge+refund race under READ COMMITTED isolation.
+  PERFORM 1 FROM credits WHERE account_id = p_account_id FOR UPDATE;
+
+  -- A charge confirms an existing reservation. Without this guard, an app bug
+  -- could log a successful generation without ever deducting credits.
+  SELECT amount INTO v_reserved_amount
+  FROM credit_ledger
+  WHERE account_id = p_account_id
+    AND generation_id = p_generation_id
+    AND type = 'reserve'
+  LIMIT 1;
+
+  IF NOT FOUND THEN
+    status := 'missing_reserve';
+    uncollectible := 0;
+    RETURN NEXT;
+    RETURN;
+  END IF;
+
+  IF p_tokens <> v_reserved_amount THEN
+    RAISE EXCEPTION 'charge_credits_detailed: amount % does not match reserved amount % for generation_id %', p_tokens, v_reserved_amount, p_generation_id;
+  END IF;
+
+  -- Fast path: already charged?
+  IF EXISTS (
+    SELECT 1 FROM credit_ledger
+    WHERE generation_id = p_generation_id AND type = 'charge'
+  ) THEN
+    status := 'duplicate';
+    uncollectible := 0;
+    RETURN NEXT;
+    RETURN;
+  END IF;
+
+  -- Variable-cost settlement is terminal. Do not add a fixed charge after it.
+  IF EXISTS (
+    SELECT 1 FROM credit_ledger
+    WHERE generation_id = p_generation_id AND type = 'trueup'
+  ) THEN
+    status := 'already_settled';
+    uncollectible := 0;
+    RETURN NEXT;
+    RETURN;
+  END IF;
+
+  -- Check if this generation was already refunded (out-of-order webhooks).
+  -- If so, we must re-deduct because refund returned the credits.
+  v_already_refunded := EXISTS (
+    SELECT 1 FROM credit_ledger
+    WHERE generation_id = p_generation_id AND type = 'refund'
+  );
+
+  IF v_already_refunded THEN
+    SELECT COALESCE(tokens, 0) INTO v_balance
+    FROM credits
+    WHERE account_id = p_account_id;
+
+    IF NOT FOUND THEN
+      status := 'missing_account';
+      uncollectible := 0;
+      RETURN NEXT;
+      RETURN;
+    END IF;
+
+    IF v_balance >= v_reserved_amount THEN
+      v_can_deduct := v_reserved_amount;
+    ELSE
+      v_can_deduct := GREATEST(v_balance, 0);
+      v_uncollectible := v_reserved_amount - v_can_deduct;
+    END IF;
+
+    IF v_can_deduct > 0 THEN
+      UPDATE credits
+      SET tokens = tokens - v_can_deduct,
+          updated_at = NOW()
+      WHERE account_id = p_account_id
+      RETURNING tokens INTO v_balance;
+    END IF;
+  ELSE
+    SELECT tokens INTO v_balance FROM credits WHERE account_id = p_account_id;
+  END IF;
+
+  v_charge_description := CASE
+    WHEN v_already_refunded AND v_uncollectible > 0
+      THEN 'baseline=refunded,uncollectible=' || v_uncollectible
+    WHEN v_already_refunded
+      THEN 'baseline=refunded'
+    ELSE NULL
+  END;
+
+  -- Insert with unique_violation safety net (race between two concurrent charges).
+  BEGIN
+    INSERT INTO credit_ledger (account_id, type, amount, balance_after, generation_id, model, description)
+    VALUES (p_account_id, 'charge', v_reserved_amount, v_balance, p_generation_id, p_model, v_charge_description);
+  EXCEPTION WHEN unique_violation THEN
+    -- Concurrent duplicate. If we re-deducted, undo it.
+    IF v_already_refunded AND v_can_deduct > 0 THEN
+      UPDATE credits
+      SET tokens = tokens + v_can_deduct, updated_at = NOW()
+      WHERE account_id = p_account_id;
+    END IF;
+    status := 'duplicate';
+    uncollectible := 0;
+    RETURN NEXT;
+    RETURN;
+  END;
+
+  IF v_uncollectible > 0 THEN
+    INSERT INTO credit_ledger (account_id, type, amount, balance_after, generation_id, model, description)
+    VALUES (
+      p_account_id,
+      'uncollectible',
+      v_uncollectible,
+      v_balance,
+      p_generation_id,
+      p_model,
+      'charge_after_refund_shortfall:' || p_generation_id
+    );
+  END IF;
+
+  status := CASE WHEN v_uncollectible > 0 THEN 'shortfall' ELSE 'charged' END;
+  uncollectible := v_uncollectible;
+  RETURN NEXT;
+END;
+$$;
+
+COMMENT ON FUNCTION charge_credits_detailed IS 'Confirm a reservation and return status. Distinguishes charged, duplicate/no-op, missing reserve, already settled, and shortfall outcomes.';
+
+-- Boolean-compatible wrapper for existing callers. Use charge_credits_detailed
+-- when the application needs to distinguish duplicate/no-op from shortfall.
+CREATE OR REPLACE FUNCTION charge_credits(
+  p_account_id    UUID,
+  p_tokens        NUMERIC,
+  p_generation_id TEXT,
+  p_model         TEXT DEFAULT NULL
+)
+RETURNS BOOLEAN
+LANGUAGE sql
+AS $$
+  SELECT status = 'charged'
+  FROM charge_credits_detailed(p_account_id, p_tokens, p_generation_id, p_model)
+  LIMIT 1;
+$$;
+
+COMMENT ON FUNCTION charge_credits IS 'Boolean-compatible charge wrapper. Use charge_credits_detailed for structured shortfall status.';
 
 -- ============================================================================
 -- FUNCTION: get_uncollectible_total(account_id)
@@ -332,13 +570,39 @@ COMMENT ON FUNCTION get_uncollectible_total IS 'Sum of uncollectible amounts (cl
 
 ALTER FUNCTION clawback_credits(UUID, NUMERIC, TEXT, TEXT)              SECURITY DEFINER SET search_path = pg_catalog, public;
 ALTER FUNCTION settle_credits(UUID, TEXT, NUMERIC, NUMERIC, TEXT)       SECURITY DEFINER SET search_path = pg_catalog, public;
+ALTER FUNCTION charge_credits_detailed(UUID, NUMERIC, TEXT, TEXT)       SECURITY DEFINER SET search_path = pg_catalog, public;
+ALTER FUNCTION charge_credits(UUID, NUMERIC, TEXT, TEXT)                SECURITY DEFINER SET search_path = pg_catalog, public;
 ALTER FUNCTION get_uncollectible_total(UUID)                            SET search_path = pg_catalog, public;
 
 DO $$
 BEGIN
+  REVOKE EXECUTE ON FUNCTION clawback_credits(UUID, NUMERIC, TEXT, TEXT)        FROM PUBLIC;
+  REVOKE EXECUTE ON FUNCTION settle_credits(UUID, TEXT, NUMERIC, NUMERIC, TEXT) FROM PUBLIC;
+  REVOKE EXECUTE ON FUNCTION charge_credits_detailed(UUID, NUMERIC, TEXT, TEXT) FROM PUBLIC;
+  REVOKE EXECUTE ON FUNCTION charge_credits(UUID, NUMERIC, TEXT, TEXT)          FROM PUBLIC;
+  REVOKE EXECUTE ON FUNCTION get_uncollectible_total(UUID)                      FROM PUBLIC;
+
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
     REVOKE EXECUTE ON FUNCTION clawback_credits(UUID, NUMERIC, TEXT, TEXT)        FROM anon;
     REVOKE EXECUTE ON FUNCTION settle_credits(UUID, TEXT, NUMERIC, NUMERIC, TEXT) FROM anon;
+    REVOKE EXECUTE ON FUNCTION charge_credits_detailed(UUID, NUMERIC, TEXT, TEXT) FROM anon;
+    REVOKE EXECUTE ON FUNCTION charge_credits(UUID, NUMERIC, TEXT, TEXT)          FROM anon;
     REVOKE EXECUTE ON FUNCTION get_uncollectible_total(UUID)                       FROM anon;
+  END IF;
+
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+    REVOKE EXECUTE ON FUNCTION clawback_credits(UUID, NUMERIC, TEXT, TEXT)        FROM authenticated;
+    REVOKE EXECUTE ON FUNCTION settle_credits(UUID, TEXT, NUMERIC, NUMERIC, TEXT) FROM authenticated;
+    REVOKE EXECUTE ON FUNCTION charge_credits_detailed(UUID, NUMERIC, TEXT, TEXT) FROM authenticated;
+    REVOKE EXECUTE ON FUNCTION charge_credits(UUID, NUMERIC, TEXT, TEXT)          FROM authenticated;
+    REVOKE EXECUTE ON FUNCTION get_uncollectible_total(UUID)                       FROM authenticated;
+  END IF;
+
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN
+    GRANT EXECUTE ON FUNCTION clawback_credits(UUID, NUMERIC, TEXT, TEXT)        TO service_role;
+    GRANT EXECUTE ON FUNCTION settle_credits(UUID, TEXT, NUMERIC, NUMERIC, TEXT) TO service_role;
+    GRANT EXECUTE ON FUNCTION charge_credits_detailed(UUID, NUMERIC, TEXT, TEXT) TO service_role;
+    GRANT EXECUTE ON FUNCTION charge_credits(UUID, NUMERIC, TEXT, TEXT)          TO service_role;
+    GRANT EXECUTE ON FUNCTION get_uncollectible_total(UUID)                      TO service_role;
   END IF;
 END $$;

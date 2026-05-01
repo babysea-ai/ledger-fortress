@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://ledger-fortress.dev/schemas/credit-event.v1.json",
   "title": "CreditEvent",
-  "description": "One row per credit lifecycle event. Logged to the credit_ledger table on every reserve, charge, refund, or add.",
+  "description": "One row per credit lifecycle event. Logged to the credit_ledger table on every balance or settlement event.",
   "type": "object",
   "required": [
     "schema_version",
@@ -31,12 +31,19 @@
     "type": {
       "type": "string",
       "description": "The type of credit event.",
-      "enum": ["reserve", "charge", "refund", "add"]
+      "enum": [
+        "reserve",
+        "charge",
+        "refund",
+        "add",
+        "clawback",
+        "trueup",
+        "uncollectible"
+      ]
     },
     "amount": {
       "type": "number",
-      "description": "Credit amount involved in this event.",
-      "exclusiveMinimum": 0
+      "description": "Credit amount involved in this event. True-up events may be positive, negative, or zero. Clawback events may be zero when the balance was already exhausted. Other event types are positive."
     },
     "balance_after": {
       "type": "number",
@@ -45,7 +52,7 @@
     },
     "generation_id": {
       "type": ["string", "null"],
-      "description": "Links reserve/charge/refund to a specific generation. Required for charge and refund, optional for reserve."
+      "description": "Links generation settlement events to a specific generation. Required for charge, refund, and true-up events. Optional for reserve."
     },
     "model": {
       "type": ["string", "null"],
@@ -61,5 +68,63 @@
       "description": "RFC 3339 timestamp of when the event occurred."
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "type": { "const": "clawback" }
+        },
+        "required": ["type"]
+      },
+      "then": {
+        "properties": {
+          "amount": { "minimum": 0 }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "enum": ["reserve", "charge", "refund", "add", "uncollectible"]
+          }
+        },
+        "required": ["type"]
+      },
+      "then": {
+        "properties": {
+          "amount": { "exclusiveMinimum": 0 }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": { "enum": ["charge", "refund", "trueup"] }
+        },
+        "required": ["type"]
+      },
+      "then": {
+        "required": ["generation_id"],
+        "properties": {
+          "generation_id": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": { "enum": ["add", "clawback"] }
+        },
+        "required": ["type"]
+      },
+      "then": {
+        "required": ["description"],
+        "properties": {
+          "description": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  ],
   "additionalProperties": false
 }

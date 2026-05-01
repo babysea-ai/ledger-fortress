@@ -62,7 +62,7 @@ CREATE TABLE IF NOT EXISTS credit_ledger (
                     CHECK (type IN ('reserve', 'charge', 'refund', 'add')),
   amount          NUMERIC(10, 3) NOT NULL CHECK (amount > 0),
   balance_after   NUMERIC(10, 3) NOT NULL,
-  generation_id   TEXT,                         -- links reserve/charge/refund to a generation
+  generation_id   TEXT,                         -- links generation settlement events to a generation
   model           TEXT,                         -- model identifier for audit
   description     TEXT,                         -- human-readable note
   created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -93,13 +93,56 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_credit_ledger_add_idempotent
 CREATE UNIQUE INDEX IF NOT EXISTS idx_credit_ledger_reserve_idempotent
   ON credit_ledger (generation_id) WHERE type = 'reserve' AND generation_id IS NOT NULL;
 
--- Fast lookup for crash recovery: find reservations without a matching charge/refund.
+-- Fast lookup for crash recovery: find reservations without a matching terminal settlement.
 CREATE INDEX IF NOT EXISTS idx_credit_ledger_reserve_pending
   ON credit_ledger (generation_id, created_at) WHERE type = 'reserve';
 
 -- Fast lookup for listing a user's ledger history.
 CREATE INDEX IF NOT EXISTS idx_credit_ledger_account_created
   ON credit_ledger (account_id, created_at DESC);
+
+-- ============================================================================
+-- FUNCTION: lf_validate_credit_amount(amount, context, allow_zero)
+--
+-- Internal helper. All ledger amounts are stored as NUMERIC(10,3), so inputs
+-- with more than three decimal places are rejected instead of silently rounded.
+-- ============================================================================
+
+CREATE OR REPLACE FUNCTION lf_validate_credit_amount(
+  p_amount     NUMERIC,
+  p_context    TEXT,
+  p_allow_zero BOOLEAN DEFAULT FALSE
+)
+RETURNS NUMERIC
+LANGUAGE plpgsql
+IMMUTABLE
+AS $$
+BEGIN
+  IF p_amount IS NULL THEN
+    RAISE EXCEPTION '%: amount is required', p_context;
+  END IF;
+
+  IF p_allow_zero THEN
+    IF p_amount < 0 THEN
+      RAISE EXCEPTION '%: amount must be non-negative', p_context;
+    END IF;
+  ELSIF p_amount <= 0 THEN
+    RAISE EXCEPTION '%: amount must be positive', p_context;
+  END IF;
+
+  IF p_amount <> ROUND(p_amount, 3) THEN
+    RAISE EXCEPTION '%: amount must have at most 3 decimal places', p_context;
+  END IF;
+
+  IF ABS(p_amount) > 9999999.999 THEN
+    RAISE EXCEPTION '%: amount must be <= 9999999.999', p_context;
+  END IF;
+
+  RETURN p_amount;
+END;
+$$;
+
+COMMENT ON FUNCTION lf_validate_credit_amount IS 'Internal helper: rejects ledger amounts with more than 3 decimal places.';
 
 -- ============================================================================
 -- FUNCTION: has_credits(account_id, tokens)
@@ -115,6 +158,10 @@ LANGUAGE plpgsql
 STABLE
 AS $$
 BEGIN
+  IF p_tokens IS NULL OR p_tokens <= 0 OR p_tokens <> ROUND(p_tokens, 3) THEN
+    RETURN FALSE;
+  END IF;
+
   RETURN (
     SELECT tokens >= p_tokens
     FROM credits
@@ -145,7 +192,30 @@ LANGUAGE plpgsql
 AS $$
 DECLARE
   v_new_balance NUMERIC;
+  v_existing_account UUID;
+  v_existing_amount NUMERIC;
 BEGIN
+  p_tokens := lf_validate_credit_amount(p_tokens, 'reserve_credits');
+
+  -- Idempotent retry: if the caller already reserved this generation, report
+  -- success without deducting again. This covers client/network retries after
+  -- the first reserve committed but the response was lost.
+  IF p_generation_id IS NOT NULL THEN
+    SELECT account_id, amount INTO v_existing_account, v_existing_amount
+    FROM credit_ledger
+    WHERE generation_id = p_generation_id
+      AND type = 'reserve'
+    LIMIT 1;
+
+    IF FOUND THEN
+      IF v_existing_account = p_account_id AND v_existing_amount <> p_tokens THEN
+        RAISE EXCEPTION 'reserve_credits: idempotency conflict for generation_id %; existing amount % does not match requested amount %', p_generation_id, v_existing_amount, p_tokens;
+      END IF;
+
+      RETURN v_existing_account = p_account_id;
+    END IF;
+  END IF;
+
   -- Single atomic UPDATE with WHERE guard.
   -- If tokens < p_tokens, zero rows updated ➜ reservation fails.
   UPDATE credits
@@ -160,8 +230,34 @@ BEGIN
   END IF;
 
   -- Log the reservation.
-  INSERT INTO credit_ledger (account_id, type, amount, balance_after, generation_id, model)
-  VALUES (p_account_id, 'reserve', p_tokens, v_new_balance, p_generation_id, p_model);
+  BEGIN
+    INSERT INTO credit_ledger (account_id, type, amount, balance_after, generation_id, model)
+    VALUES (p_account_id, 'reserve', p_tokens, v_new_balance, p_generation_id, p_model);
+  EXCEPTION WHEN unique_violation THEN
+    -- Concurrent duplicate reserve won the race after our UPDATE. Roll back
+    -- only this reserve's balance deduction, then return success if the
+    -- existing reservation belongs to the same account.
+    UPDATE credits
+    SET tokens = tokens + p_tokens,
+        updated_at = NOW()
+    WHERE account_id = p_account_id;
+
+    IF p_generation_id IS NOT NULL THEN
+      SELECT account_id, amount INTO v_existing_account, v_existing_amount
+      FROM credit_ledger
+      WHERE generation_id = p_generation_id
+        AND type = 'reserve'
+      LIMIT 1;
+
+      IF v_existing_account = p_account_id AND v_existing_amount <> p_tokens THEN
+        RAISE EXCEPTION 'reserve_credits: idempotency conflict for generation_id %; existing amount % does not match requested amount %', p_generation_id, v_existing_amount, p_tokens;
+      END IF;
+
+      RETURN v_existing_account = p_account_id;
+    END IF;
+
+    RETURN FALSE;
+  END;
 
   RETURN TRUE;
 END;
@@ -190,14 +286,33 @@ AS $$
 DECLARE
   v_balance NUMERIC;
   v_already_refunded BOOLEAN;
+  v_reserved_amount NUMERIC;
 BEGIN
   IF p_generation_id IS NULL THEN
     RAISE EXCEPTION 'charge_credits: generation_id is required';
   END IF;
+  p_tokens := lf_validate_credit_amount(p_tokens, 'charge_credits');
 
   -- Serialize concurrent operations on the same account.
   -- Prevents the charge+refund race under READ COMMITTED isolation.
   PERFORM 1 FROM credits WHERE account_id = p_account_id FOR UPDATE;
+
+  -- A charge confirms an existing reservation. Without this guard, an app bug
+  -- could log a successful generation without ever deducting credits.
+  SELECT amount INTO v_reserved_amount
+  FROM credit_ledger
+  WHERE account_id = p_account_id
+    AND generation_id = p_generation_id
+    AND type = 'reserve'
+  LIMIT 1;
+
+  IF NOT FOUND THEN
+    RETURN FALSE;
+  END IF;
+
+  IF p_tokens <> v_reserved_amount THEN
+    RAISE EXCEPTION 'charge_credits: amount % does not match reserved amount % for generation_id %', p_tokens, v_reserved_amount, p_generation_id;
+  END IF;
 
   -- Fast path: already charged?
   IF EXISTS (
@@ -205,6 +320,14 @@ BEGIN
     WHERE generation_id = p_generation_id AND type = 'charge'
   ) THEN
     RETURN FALSE;  -- idempotent no-op
+  END IF;
+
+  -- Variable-cost settlement is terminal. Do not add a fixed charge after it.
+  IF EXISTS (
+    SELECT 1 FROM credit_ledger
+    WHERE generation_id = p_generation_id AND type = 'trueup'
+  ) THEN
+    RETURN FALSE;
   END IF;
 
   -- Check if this generation was already refunded (out-of-order webhooks).
@@ -217,15 +340,17 @@ BEGIN
   IF v_already_refunded THEN
     -- Re-deduct: credits were returned by refund, but generation succeeded.
     UPDATE credits
-    SET tokens = tokens - p_tokens,
+    SET tokens = tokens - v_reserved_amount,
         updated_at = NOW()
     WHERE account_id = p_account_id
-      AND tokens >= p_tokens
+      AND tokens >= v_reserved_amount
     RETURNING tokens INTO v_balance;
 
     IF NOT FOUND THEN
-      -- Insufficient balance to re-deduct. Still log the charge for audit.
-      SELECT tokens INTO v_balance FROM credits WHERE account_id = p_account_id;
+      -- Insufficient balance to re-deduct after a prior refund. Do not mark
+      -- the generation charged; the application can retry, pause the account,
+      -- or settle via an explicit uncollectible flow.
+      RETURN FALSE;
     END IF;
   ELSE
     SELECT tokens INTO v_balance FROM credits WHERE account_id = p_account_id;
@@ -234,12 +359,12 @@ BEGIN
   -- Insert with unique_violation safety net (race between two concurrent charges).
   BEGIN
     INSERT INTO credit_ledger (account_id, type, amount, balance_after, generation_id, model)
-    VALUES (p_account_id, 'charge', p_tokens, v_balance, p_generation_id, p_model);
+    VALUES (p_account_id, 'charge', v_reserved_amount, v_balance, p_generation_id, p_model);
   EXCEPTION WHEN unique_violation THEN
     -- Concurrent duplicate. If we re-deducted, undo it.
     IF v_already_refunded THEN
       UPDATE credits
-      SET tokens = tokens + p_tokens, updated_at = NOW()
+      SET tokens = tokens + v_reserved_amount, updated_at = NOW()
       WHERE account_id = p_account_id;
     END IF;
     RETURN FALSE;  -- concurrent duplicate, idempotent no-op
@@ -256,9 +381,10 @@ COMMENT ON FUNCTION charge_credits IS 'Confirm a reservation (log-only). Idempot
 --
 -- Returns reserved credits to the account after a failed or cancelled generation.
 --
--- Two guards:
+-- Three guards:
 --   1. If already charged ➜ do NOT refund (prevents: reserve ➜ charge ➜ crash ➜ refund ➜ free output)
---   2. If already refunded ➜ no-op
+--   2. If already settled via true-up ➜ do NOT refund
+--   3. If already refunded ➜ no-op
 --
 -- Idempotent: safe to call from webhooks, crash recovery, and cancel endpoints.
 -- ============================================================================
@@ -274,14 +400,33 @@ LANGUAGE plpgsql
 AS $$
 DECLARE
   v_new_balance NUMERIC;
+  v_reserved_amount NUMERIC;
 BEGIN
   IF p_generation_id IS NULL THEN
     RAISE EXCEPTION 'refund_credits: generation_id is required';
   END IF;
+  p_tokens := lf_validate_credit_amount(p_tokens, 'refund_credits');
 
   -- Serialize concurrent operations on the same account.
   -- Prevents the charge+refund race under READ COMMITTED isolation.
   PERFORM 1 FROM credits WHERE account_id = p_account_id FOR UPDATE;
+
+  -- A refund reverses an existing reservation. Never mint credits for a
+  -- generation that was not reserved.
+  SELECT amount INTO v_reserved_amount
+  FROM credit_ledger
+  WHERE account_id = p_account_id
+    AND generation_id = p_generation_id
+    AND type = 'reserve'
+  LIMIT 1;
+
+  IF NOT FOUND THEN
+    RETURN FALSE;
+  END IF;
+
+  IF p_tokens <> v_reserved_amount THEN
+    RAISE EXCEPTION 'refund_credits: amount % does not match reserved amount % for generation_id %', p_tokens, v_reserved_amount, p_generation_id;
+  END IF;
 
   -- Guard 1: If already charged, do NOT refund.
   -- This prevents the deadly sequence: reserve ➜ webhook charges ➜ crash ➜ refund ➜ free output.
@@ -292,7 +437,15 @@ BEGIN
     RETURN FALSE;
   END IF;
 
-  -- Guard 2: If already refunded, no-op.
+  -- Guard 2: If already settled via variable-cost true-up, do NOT refund.
+  IF EXISTS (
+    SELECT 1 FROM credit_ledger
+    WHERE generation_id = p_generation_id AND type = 'trueup'
+  ) THEN
+    RETURN FALSE;
+  END IF;
+
+  -- Guard 3: If already refunded, no-op.
   IF EXISTS (
     SELECT 1 FROM credit_ledger
     WHERE generation_id = p_generation_id AND type = 'refund'
@@ -302,7 +455,7 @@ BEGIN
 
   -- Return credits to the balance.
   UPDATE credits
-  SET tokens = tokens + p_tokens,
+  SET tokens = tokens + v_reserved_amount,
       updated_at = NOW()
   WHERE account_id = p_account_id
   RETURNING tokens INTO v_new_balance;
@@ -314,11 +467,11 @@ BEGIN
   -- Log the refund with unique_violation safety net.
   BEGIN
     INSERT INTO credit_ledger (account_id, type, amount, balance_after, generation_id, model)
-    VALUES (p_account_id, 'refund', p_tokens, v_new_balance, p_generation_id, p_model);
+    VALUES (p_account_id, 'refund', v_reserved_amount, v_new_balance, p_generation_id, p_model);
   EXCEPTION WHEN unique_violation THEN
     -- Concurrent refund won the race. Roll back the balance change.
     UPDATE credits
-    SET tokens = tokens - p_tokens,
+    SET tokens = tokens - v_reserved_amount,
         updated_at = NOW()
     WHERE account_id = p_account_id;
 
@@ -356,8 +509,14 @@ DECLARE
   v_new_balance NUMERIC;
   v_desc        TEXT;
 BEGIN
+  p_tokens := lf_validate_credit_amount(p_tokens, 'add_credits');
+
   -- Use idempotency_key as description if provided, else use p_description.
-  v_desc := COALESCE(p_idempotency_key, p_description);
+  v_desc := NULLIF(TRIM(COALESCE(p_idempotency_key, p_description)), '');
+
+  IF v_desc IS NULL THEN
+    RAISE EXCEPTION 'add_credits: description or idempotency_key is required';
+  END IF;
 
   -- Fast path: already added?
   IF EXISTS (
@@ -468,10 +627,39 @@ $$;
 COMMENT ON FUNCTION get_balance IS 'Returns the current credit balance for an account.';
 
 -- ============================================================================
+-- FUNCTION: get_plan_credits(variant_id)
+-- Returns the configured credit allocation for a Stripe Price ID.
+-- ============================================================================
+
+CREATE OR REPLACE FUNCTION get_plan_credits(
+  p_variant_id TEXT
+)
+RETURNS NUMERIC
+LANGUAGE plpgsql
+STABLE
+AS $$
+DECLARE
+  v_tokens NUMERIC;
+BEGIN
+  IF p_variant_id IS NULL OR TRIM(p_variant_id) = '' THEN
+    RETURN NULL;
+  END IF;
+
+  SELECT tokens INTO v_tokens
+  FROM plans
+  WHERE variant_id = p_variant_id;
+
+  RETURN v_tokens;
+END;
+$$;
+
+COMMENT ON FUNCTION get_plan_credits IS 'Returns credits configured for a Stripe Price ID, or NULL when not configured.';
+
+-- ============================================================================
 -- FUNCTION: find_orphaned_reservations(window_minutes, lim)
 --
 -- Used by crash recovery. Finds reservations older than `window_minutes`
--- that have no matching charge or refund.
+-- that have no matching charge, refund, or true-up settlement.
 -- ============================================================================
 
 CREATE OR REPLACE FUNCTION find_orphaned_reservations(
@@ -505,7 +693,7 @@ BEGIN
     AND NOT EXISTS (
       SELECT 1 FROM credit_ledger cl2
       WHERE cl2.generation_id = cl.generation_id
-        AND cl2.type IN ('charge', 'refund')
+        AND cl2.type IN ('charge', 'refund', 'trueup')
     )
   ORDER BY cl.created_at ASC
   LIMIT p_limit;

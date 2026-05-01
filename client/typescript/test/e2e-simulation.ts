@@ -10,6 +10,11 @@
  * Required env:
  *   DATABASE_URL   - Supabase session pooler URL
  *   STRIPE_SECRET  - Stripe test-mode restricted key
+ *   LEDGER_FORTRESS_E2E_ALLOW_DESTRUCTIVE=1
+ *
+ * Optional env:
+ *   SUPABASE_URL
+ *   SUPABASE_PUBLISHABLE_KEY or SUPABASE_ANON_KEY
  */
 
 import { LedgerFortress } from '../src/index.js';
@@ -22,9 +27,18 @@ import Stripe from 'stripe';
 
 const DATABASE_URL = process.env.DATABASE_URL!;
 const STRIPE_SECRET = process.env.STRIPE_SECRET!;
+const ALLOW_DESTRUCTIVE = process.env.LEDGER_FORTRESS_E2E_ALLOW_DESTRUCTIVE === '1';
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_PUBLISHABLE_KEY =
+  process.env.SUPABASE_PUBLISHABLE_KEY ?? process.env.SUPABASE_ANON_KEY;
 
 if (!DATABASE_URL || !STRIPE_SECRET) {
   console.error('Missing DATABASE_URL or STRIPE_SECRET');
+  process.exit(1);
+}
+
+if (!ALLOW_DESTRUCTIVE) {
+  console.error('Set LEDGER_FORTRESS_E2E_ALLOW_DESTRUCTIVE=1 to run this destructive E2E simulation.');
   process.exit(1);
 }
 
@@ -130,6 +144,17 @@ async function main() {
 
     const balanceAfterReserve = await fortress.getBalance(testAccountId);
     assertClose(balanceAfterReserve, 7.0, 'balance is 7.0 after reserve');
+
+    const reservedRetry = await fortress.reserve({
+      accountId: testAccountId,
+      amount: 3.0,
+      generationId: genId1,
+      model: 'flux-schnell',
+    });
+    assert(reservedRetry === true, 'duplicate reserve retry returns true (idempotent)');
+
+    const balanceAfterReserveRetry = await fortress.getBalance(testAccountId);
+    assertClose(balanceAfterReserveRetry, 7.0, 'balance unchanged after duplicate reserve retry');
 
     // ------------------------------------------------------------------
     // 5. Test: reserve_credits (insufficient balance)
@@ -276,6 +301,36 @@ async function main() {
     assert(threwOnNeg, 'addCredits(amount=-5) throws');
 
     // ------------------------------------------------------------------
+    // 13b. Test: no phantom charge/refund/settle without reserve
+    // ------------------------------------------------------------------
+    console.log('\n--- Test 13b: no phantom settlement without reserve ---');
+    const balanceBeforePhantom = await fortress.getBalance(testAccountId);
+    const phantomCharge = await fortress.charge({
+      accountId: testAccountId,
+      generationId: 'gen_no_reserve_charge',
+      amount: 1.0,
+    });
+    assert(phantomCharge === false, 'charge without reserve returns false');
+
+    const phantomRefund = await fortress.refund({
+      accountId: testAccountId,
+      generationId: 'gen_no_reserve_refund',
+      amount: 1.0,
+    });
+    assert(phantomRefund === false, 'refund without reserve returns false');
+
+    const phantomSettle = await fortress.settle({
+      accountId: testAccountId,
+      generationId: 'gen_no_reserve_settle',
+      reservedAmount: 1.0,
+      actualAmount: 0.5,
+    });
+    assert(phantomSettle === false, 'settle without reserve returns false');
+
+    const balanceAfterPhantom = await fortress.getBalance(testAccountId);
+    assertClose(balanceAfterPhantom, balanceBeforePhantom, 'balance unchanged after phantom settlement attempts');
+
+    // ------------------------------------------------------------------
     // 14. Test: ledger audit trail
     // ------------------------------------------------------------------
     console.log('\n--- Test 14: ledger audit trail ---');
@@ -293,7 +348,7 @@ async function main() {
     // ------------------------------------------------------------------
     console.log('\n--- Test 15: crash recovery ---');
 
-    // Create an orphan: reserve but never charge/refund, with old timestamp
+    // Create an orphan: reserve but never charge/refund/settle, with old timestamp
     const orphanGenId = 'gen_orphan_001';
     await fortress.reserve({
       accountId: testAccountId,
@@ -633,34 +688,42 @@ async function main() {
     // 26. Test: RLS enforcement (anon cannot access tables)
     // ------------------------------------------------------------------
     console.log('\n--- Test 26: RLS enforcement ---');
-    const anonKey = 'sb_publishable_p5GwBdR3wS27YCLc0M8T1w_-KTNch9A';
-    const supabaseUrl = 'https://iprguzbqaiujddjubtxx.supabase.co';
+    if (SUPABASE_URL && SUPABASE_PUBLISHABLE_KEY) {
+      // Try to read credits via PostgREST as anon/publishable key.
+      const readResp = await fetch(`${SUPABASE_URL}/rest/v1/credits?select=*`, {
+        headers: {
+          apikey: SUPABASE_PUBLISHABLE_KEY,
+          Authorization: `Bearer ${SUPABASE_PUBLISHABLE_KEY}`,
+        },
+      });
+      assert(
+        readResp.status === 401 || readResp.status === 403,
+        `anon read denied (got HTTP ${readResp.status})`,
+      );
 
-    // Try to read credits via PostgREST as anon.
-    const readResp = await fetch(`${supabaseUrl}/rest/v1/credits?select=*`, {
-      headers: { apikey: anonKey, Authorization: `Bearer ${anonKey}` },
-    });
-    assert(readResp.status === 401 || readResp.status === 403,
-      `anon read denied (got HTTP ${readResp.status})`);
-
-    // Try to insert into credit_ledger as anon.
-    const writeResp = await fetch(`${supabaseUrl}/rest/v1/credit_ledger`, {
-      method: 'POST',
-      headers: {
-        apikey: anonKey,
-        Authorization: `Bearer ${anonKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        account_id: testAccountId,
-        type: 'add',
-        amount: 999999,
-        balance_after: 999999,
-        description: 'attempted-forge',
-      }),
-    });
-    assert(writeResp.status === 401 || writeResp.status === 403,
-      `anon write denied (got HTTP ${writeResp.status})`);
+      // Try to insert into credit_ledger as anon/publishable key.
+      const writeResp = await fetch(`${SUPABASE_URL}/rest/v1/credit_ledger`, {
+        method: 'POST',
+        headers: {
+          apikey: SUPABASE_PUBLISHABLE_KEY,
+          Authorization: `Bearer ${SUPABASE_PUBLISHABLE_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          account_id: testAccountId,
+          type: 'add',
+          amount: 999999,
+          balance_after: 999999,
+          description: 'attempted-forge',
+        }),
+      });
+      assert(
+        writeResp.status === 401 || writeResp.status === 403,
+        `anon write denied (got HTTP ${writeResp.status})`,
+      );
+    } else {
+      console.log('  SKIP: set SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY to probe PostgREST RLS');
+    }
 
     // ------------------------------------------------------------------
     // 27. Test: Cost true-up (actual < reserved ➜ refund difference)
@@ -708,6 +771,25 @@ async function main() {
     assert(settledAgain === false, 'duplicate settle returns false');
     settleBal = await fortress.getBalance(testAccountId2);
     assertClose(settleBal, 9.7, 'balance unchanged after duplicate settle');
+
+    const refundAfterSettle = await fortress.refund({
+      accountId: testAccountId2,
+      generationId: settleGenId1,
+      amount: 1.0,
+      model: 'flux-pro',
+    });
+    assert(refundAfterSettle === false, 'refund after settle returns false (terminal true-up)');
+
+    const chargeAfterSettle = await fortress.charge({
+      accountId: testAccountId2,
+      generationId: settleGenId1,
+      amount: 1.0,
+      model: 'flux-pro',
+    });
+    assert(chargeAfterSettle === false, 'charge after settle returns false (terminal true-up)');
+
+    settleBal = await fortress.getBalance(testAccountId2);
+    assertClose(settleBal, 9.7, 'balance unchanged after refund/charge attempts on settled generation');
 
     // ------------------------------------------------------------------
     // 29. Test: settle (true-up: actual > reserved, sufficient balance)
@@ -865,6 +947,22 @@ async function main() {
     const totalUncoll = await fortress.getUncollectibleTotal(clawAccountId);
     assertClose(totalUncoll, 70.0, 'uncollectible total is $70');
 
+    console.log('\n--- Test 34b: clawback (zero balance, fully uncollectible) ---');
+    const claw4 = await fortress.clawback({
+      accountId: clawAccountId,
+      amount: 5.0,
+      idempotencyKey: 'refund:re_test_003',
+      reason: 'stripe_refund',
+    });
+    assert(claw4.applied === true, 'zero-balance clawback still records audit row');
+    assertClose(claw4.uncollectible, 5.0, 'zero-balance clawback is fully uncollectible');
+
+    const clawBal4 = await fortress.getBalance(clawAccountId);
+    assertClose(clawBal4, 0, 'balance remains 0 after zero-balance clawback');
+
+    const totalUncoll2 = await fortress.getUncollectibleTotal(clawAccountId);
+    assertClose(totalUncoll2, 75.0, 'uncollectible total includes zero-balance clawback');
+
     // ------------------------------------------------------------------
     // 35. Test: Stripe charge.refunded webhook handler
     // ------------------------------------------------------------------
@@ -898,7 +996,7 @@ async function main() {
           id: 'ch_test_refund_001',
           customer: refundCustomer.id,
           amount_refunded: 1500, // $15
-          refunds: { data: [{ id: 're_test_webhook_001' }] },
+          refunds: { data: [{ id: 're_test_webhook_001', amount: 1500 }] },
         },
       },
     };
@@ -916,7 +1014,7 @@ async function main() {
     // ------------------------------------------------------------------
     console.log('\n--- Test 36: charge.refunded idempotency ---');
     const refundResult2 = await refundHandler(refundEvent);
-    assert(refundResult2.action === 'credits_clawed_back', 'still returns handled');
+    assert(refundResult2.action === 'skipped_duplicate', 'duplicate refund is skipped');
     const balAfterDuplicate = await fortress.getBalance(testAccountId);
     assertClose(balAfterDuplicate, 35.0, 'balance unchanged after duplicate refund webhook');
 
