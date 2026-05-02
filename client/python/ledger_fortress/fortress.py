@@ -89,7 +89,11 @@ def _assert_credit_amount(
         requirement = "non-negative" if allow_zero else "positive"
         raise ValueError(f"{field_name} must be {requirement}")
 
-    if decimal_amount.as_tuple().exponent < -3:
+    exponent = decimal_amount.as_tuple().exponent
+    if not isinstance(exponent, int):
+        raise ValueError(f"{field_name} must be a finite number")
+
+    if exponent < -3:
         raise ValueError(f"{field_name} must have at most 3 decimal places")
 
     if abs(decimal_amount) > Decimal("9999999.999"):
@@ -106,9 +110,15 @@ class LedgerFortress:
         min_connections: int = 1,
         max_connections: int = 10,
     ) -> None:
-        url = database_url or os.environ.get("DATABASE_URL")
+        url = (
+            database_url
+            or os.environ.get("SUPABASE_DATABASE_URL")
+            or os.environ.get("DATABASE_URL")
+        )
         if not url:
-            raise ValueError("database_url is required (or set DATABASE_URL env var)")
+            raise ValueError(
+                "database_url is required (or set SUPABASE_DATABASE_URL/DATABASE_URL env var)"
+            )
 
         self._pool = psycopg2.pool.ThreadedConnectionPool(
             min_connections,

@@ -1,7 +1,7 @@
 /**
  * ledger-fortress E2E Simulation
  *
- * Tests the full credit lifecycle against a real Supabase Postgres database
+ * Tests the full credit lifecycle against a real Supabase/Postgres database
  * and real Stripe test-mode API. Verifies every edge case the fortress handles.
  *
  * Usage:

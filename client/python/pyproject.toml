@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ledger-fortress"
-version = "0.1.0"
-description = "Atomic credit settlement engine for async AI workloads, built on Stripe + Postgres."
+version = "0.1.2"
+description = "Atomic credit settlement engine for async AI workloads, built on Stripe + Supabase/Postgres."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
 authors = [{ name = "BabySea, Inc.", email = "dev@babysea.ai" }]
-keywords = ["stripe", "postgres", "credits", "billing", "ai", "generative", "settlement", "ledger"]
+keywords = ["stripe", "supabase", "postgres", "credits", "billing", "ai", "generative", "settlement", "ledger"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Programming Language :: Python :: 3",

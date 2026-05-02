@@ -23,7 +23,7 @@ Multiply this by hundreds of generations per day, and you have a slow leak that 
 
 ## The solution
 
-`find_orphaned_reservations` is a SQL function that finds reservations with no matching settlement:
+`find_orphaned_reservations` is a Supabase/Postgres SQL function that finds reservations with no matching settlement:
 
 ```sql
 SELECT * FROM find_orphaned_reservations(

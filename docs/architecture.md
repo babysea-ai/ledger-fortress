@@ -1,6 +1,15 @@
 # Architecture
 
-This document explains the settlement loops, the storage layout, and the SQL guarantees. For the full edge-case walkthrough, see [`edge-cases.md`](edge-cases.md). For Stripe webhook specifics, see [`stripe-integration.md`](stripe-integration.md). For orphan recovery, see [`crash-recovery.md`](crash-recovery.md).
+This document explains the Stripe + Supabase/Postgres settlement loops, the storage layout, and the SQL guarantees. For the full edge-case walkthrough, see [`edge-cases.md`](edge-cases.md). For Stripe webhook specifics, see [`stripe-integration.md`](stripe-integration.md). For orphan recovery, see [`crash-recovery.md`](crash-recovery.md).
+
+## Stack boundary
+
+| Boundary | Owner | Rule |
+|---|---|---|
+| Payment facts | Stripe | Stripe is the external source of invoices, checkout sessions, refunds, disputes, and webhook retries. |
+| Credit invariants | Supabase/Postgres | Supabase/Postgres owns `credits`, `credit_ledger`, non-negative balance constraints, idempotency indexes, and RLS. |
+| Application coordination | Your backend | The app maps Stripe customers and generation IDs to account IDs, then calls fortress functions. |
+| Client access | Supabase anon/authenticated roles | Client roles must not write ledger tables. The default migration revokes table/function access from them. |
 
 ## The two loops
 
@@ -114,7 +123,11 @@ reserved ➜ settled
 
 ## Deployment boundary
 
-- PostgreSQL is the source of truth for balance and ledger state.
-- Run migrations over a direct/session connection; run runtime traffic through a transaction-mode pooler.
+- Supabase/Postgres is the source of truth for balance and ledger state.
+- Run migrations over a direct/session connection; run runtime traffic through a transaction-mode Supabase pooler when using Supabase-hosted Postgres.
 - Webhooks, cron, and application servers can fail independently because settlement is replay-safe.
 - The application decides when to start work; PostgreSQL decides whether the account can afford it.
+
+## Real-stack validation
+
+The non-destructive smoke harness in [`../examples/real-stack-smoke/`](../examples/real-stack-smoke/) validates this boundary against real Stripe test-mode API credentials and a real Supabase/Postgres project by creating a disposable schema, applying migrations there, exercising the state machine, and dropping the schema by default.

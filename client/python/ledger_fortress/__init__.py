@@ -5,4 +5,6 @@
 
 from ledger_fortress.fortress import ChargeResult, ClawbackResult, LedgerFortress
 
-__all__ = ["ChargeResult", "ClawbackResult", "LedgerFortress"]
+__version__ = "0.1.2"
+
+__all__ = ["ChargeResult", "ClawbackResult", "LedgerFortress", "__version__"]

@@ -1,6 +1,6 @@
 # Stripe Integration Guide
 
-`ledger-fortress` integrates with Stripe to convert subscription payments and credit pack purchases into spendable credits.
+`ledger-fortress` integrates with Stripe to convert subscription payments and credit pack purchases into spendable credits stored in Supabase/Postgres.
 
 ## Overview
 
@@ -9,12 +9,14 @@ Stripe                      ledger-fortress             Your App
   │                              │                        │
   │  invoice.paid                │                        │
   │ ───────────────────────────► │                        │
+  │                              │  Supabase RPC          │
   │                              │  add_credits()         │
   │                              │  (idempotent via       │
   │                              │   invoice ID)          │
   │                              │                        │
   │  checkout.session.completed  │                        │
   │ ───────────────────────────► │                        │
+  │                              │  Supabase RPC          │
   │                              │  add_credits()         │
   │                              │  (idempotent via       │
   │                              │   payment intent ID)   │
@@ -54,7 +56,7 @@ import { LedgerFortress } from 'ledger-fortress';
 import { createStripeWebhookHandler, verifyStripeSignature } from 'ledger-fortress/stripe';
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
-const fortress = new LedgerFortress({ databaseUrl: process.env.DATABASE_URL! });
+const fortress = new LedgerFortress({ databaseUrl: process.env.SUPABASE_DATABASE_URL! });
 
 const handler = createStripeWebhookHandler({
   fortress,
@@ -111,7 +113,7 @@ export async function POST(request: Request) {
 
 ### 3. Handle the events
 
-The webhook handler processes four Stripe events:
+The webhook handler processes four Stripe events. In production, pass only events that were verified with Stripe's raw-body signature verification.
 
 #### `invoice.paid`
 

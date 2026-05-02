@@ -1,6 +1,14 @@
 # BabySea provenance and OSS scope
 
-`ledger-fortress` is inspired by BabySea's production credit system. The OSS package keeps the same core invariants and generalizes the integration points so other teams can use their own Stripe account, Postgres database, account table, generation table, and webhook stack.
+`ledger-fortress` is inspired by BabySea's production credit system. The OSS package keeps the same core invariants and generalizes the integration points so other teams can use their own Stripe account, Supabase/Postgres database, account table, generation table, and webhook stack.
+
+The grounding was checked against BabySea's implementation paths:
+
+- `apps/web/supabase/schemas/21-credits.sql` for `plans`, `credits`, `credit_ledger`, `reserve_credits`, `charge_credits`, `refund_credits`, `add_credits`, and ledger idempotency indexes.
+- `apps/web/supabase/schemas/34-credit-alerts.sql` for the low-balance alert state machine.
+- `apps/web/lib/inference-hub/credit/service.ts` for request-time reserve, charge confirmation, refund, and alert reset/check calls.
+- `apps/web/app/api/billing/webhook/route.ts` for Stripe invoice/checkout reconciliation into `add_credits` with `invoice:*` and `order:*` idempotency keys.
+- `apps/web/app/home/[account]/billing/_lib/server/team-billing.service.ts` for the server-side credit-pack active-subscription guard.
 
 ## Directly mirrored from BabySea
 
@@ -16,11 +24,11 @@ These pieces map to BabySea's current production approach:
 | Crash recovery | A scheduled cleanup finds stale pending generations and refunds reserved credits safely | `find_orphaned_reservations()` / `fortress.recoverOrphans()` |
 | Low-balance alerts | Threshold state machine: fire once per descent, re-arm after top-up/refund | `check_credit_alerts()` and `reset_credit_alerts()` |
 | Stale checkout guard | Credit pack redemption is guarded at webhook time, not only checkout creation time | `hasActiveSubscription` callback |
-| Security boundary | Credit tables are backend-owned financial state, not client-writable cache | RLS enabled, client table grants revoked, mutating functions locked with `SECURITY DEFINER` and `search_path` |
+| Security boundary | Credit tables are backend-owned financial state, not client-writable cache | BabySea uses Supabase RLS and service-role mutations; OSS hardens further by revoking client table grants and locking mutating functions with `SECURITY DEFINER` and `search_path` |
 
 ## Generalized for the OSS package
 
-These pieces are included because they are natural extensions of the same ledger model for community Stripe/Postgres deployments:
+These pieces are included because they are natural extensions of the same ledger model for community Stripe + Supabase/Postgres deployments:
 
 | Area | Why it exists in OSS |
 |---|---|
@@ -36,4 +44,4 @@ These pieces are included because they are natural extensions of the same ledger
 - No hosted BabySea secrets, plan IDs, customer IDs, or deployment-specific configuration are included.
 - No application authorization policy is assumed beyond the account ID passed by the adopter's backend.
 
-The invariant is intentionally small: Stripe moves money, Postgres owns credit balance and ledger transitions, and the adopter's application maps its account and generation model into those functions.
+The invariant is intentionally small: Stripe moves money, Supabase/Postgres owns credit balance and ledger transitions, and the adopter's application maps its account and generation model into those functions.

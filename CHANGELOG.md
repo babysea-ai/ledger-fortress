@@ -8,6 +8,23 @@ All notable changes to `ledger-fortress` will be documented here. The format fol
 
 _No unreleased changes._
 
+## [0.1.2] - 2026-05-02
+
+### Added
+- Non-destructive `examples/real-stack-smoke/` validation harness for real Stripe test-mode API credentials and a real Supabase/Postgres project using a disposable schema.
+- Explicit Stripe + Supabase/Postgres stack contract, terminology, and non-goals in the README and architecture docs.
+- Sentry code-guard for the `babysea-ai/ledger-fortress` OSS project.
+- Standalone OSS security policy and Dependabot dependency-security configuration for the public `babysea-ai/ledger-fortress` repository.
+
+### Changed
+- Reframed the public package metadata and SDK docs from generic Stripe/Postgres to Stripe + Supabase/Postgres.
+- Switched SQL UUID defaults from `uuid-ossp`/`uuid_generate_v4()` to Supabase-friendly `pgcrypto`/`gen_random_uuid()`.
+- Replaced the unrelated roadmap with the current validated v0.1 surface.
+
+### Validated
+- Re-grounded the OSS scope against BabySea production credit files: `21-credits.sql`, `34-credit-alerts.sql`, the inference-hub credit service, the Stripe billing webhook route, and the team billing checkout guard.
+- Confirmed the real-stack smoke harness refuses live Stripe keys, drops its disposable Supabase schema by default, and only creates a disposable Stripe test customer.
+
 ## [0.1.1] - 2026-05-02
 
 ### Added

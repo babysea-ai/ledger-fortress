@@ -7,10 +7,10 @@
 -- Licensed under the Apache License, Version 2.0.
 
 -- ============================================================================
--- EXTENSION: uuid
+-- EXTENSION: pgcrypto
 -- ============================================================================
 
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 -- ============================================================================
 -- TABLE: plans
@@ -56,7 +56,7 @@ COMMENT ON TABLE credits IS 'One row per account. Balance with CHECK >= 0 preven
 -- ============================================================================
 
 CREATE TABLE IF NOT EXISTS credit_ledger (
-  id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   account_id      UUID NOT NULL,               -- FK to your accounts table
   type            TEXT NOT NULL
                     CHECK (type IN ('reserve', 'charge', 'refund', 'add')),

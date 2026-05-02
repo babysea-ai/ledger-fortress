@@ -1,6 +1,6 @@
 # ledger-fortress TypeScript SDK
 
-Atomic credit settlement for async AI workloads, built on Stripe and Postgres.
+Atomic credit settlement for async AI workloads, built on Stripe and Supabase/Postgres.
 
 See the repository README and docs for migrations, architecture, and end-to-end setup:
 

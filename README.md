@@ -1,25 +1,71 @@
+<div align="center">
+
 # 🏰 ledger-fortress
 
-**An atomic credit settlement engine for async AI workloads, built on Stripe + Postgres.**
+**Atomic credit settlement for async AI workloads.<br/>
+Built on Stripe and Supabase/Postgres.**
 
+<br/>
+
+[![Open Source](https://img.shields.io/badge/open%20source-BabySea-48d1cc.svg)](https://babysea.ai)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
-[![Stripe](https://img.shields.io/badge/built%20on-Stripe-635BFF.svg)](https://stripe.com)
-[![Postgres](https://img.shields.io/badge/storage-PostgreSQL-4169E1.svg)](https://www.postgresql.org)
 [![Status](https://img.shields.io/badge/status-alpha-orange.svg)](#status)
+[![Sentry](https://img.shields.io/badge/Sentry-code%20guard-362D59.svg?logo=sentry&logoColor=white)](https://babysea-hq.sentry.io/projects/babysea-ai-ledger-fortress/)
+
+<br/>
+
+**Infrastructure**
+
+[![Stripe](https://img.shields.io/badge/payments-Stripe-635BFF.svg)](https://stripe.com)
+[![Supabase](https://img.shields.io/badge/platform-Supabase-3ECF8E.svg)](https://supabase.com)
+[![Postgres](https://img.shields.io/badge/ledger-PostgreSQL-4169E1.svg)](https://www.postgresql.org)
+
+<br/>
 
 *Every generation settles.*
 
----
+</div>
 
 ## What this is
 
-`ledger-fortress` is an open-source credit-settlement engine inspired by the core invariants used in [BabySea](https://babysea.ai)'s production credit system: atomic reserve ➜ charge ➜ refund, database-enforced idempotency, and crash recovery for async AI generations. The OSS package generalizes that pattern for Stripe/Postgres teams that need subscriptions, credit packs, variable-cost settlement, refunds, disputes, and auditable shortfalls.
+`ledger-fortress` is an open-source credit-settlement engine inspired by the core invariants used in [BabySea](https://babysea.ai)'s production credit system: atomic reserve ➜ charge ➜ refund, database-enforced idempotency, Stripe webhook reconciliation, and crash recovery for async AI generations. The OSS package generalizes that pattern for Stripe + Supabase/Postgres teams that need subscriptions, credit packs, variable-cost settlement, refunds, disputes, and auditable shortfalls.
 
 For the exact split between BabySea-mirrored behavior and OSS-generalized extensions, see [`docs/babysea-provenance.md`](docs/babysea-provenance.md).
 
-If you run an **AI generation platform** (images, video, audio, 3D - anything where the workload runs asynchronously for 2-120 seconds), this repo gives you the entire credit lifecycle. Apply the SQL migrations to your Postgres, then call the SDK (TypeScript or Python) from your application.
+If you run an **AI generation platform** (images, video, audio, 3D - anything where the workload runs asynchronously for 2-120 seconds), this repo gives you the entire credit lifecycle. Apply the SQL migrations to Supabase/Postgres, then call the SDK (TypeScript or Python) from your backend.
 
-You bring your Stripe account and your Postgres database. The fortress handles the rest.
+You bring your Stripe account and your Supabase project. The fortress handles the ledger boundary.
+
+## Stack contract
+
+`ledger-fortress` deliberately uses the same stack boundary as BabySea's credit system:
+
+| Layer | Stack | Contract |
+|---|---|---|
+| External money movement | Stripe | Subscriptions, invoices, checkout sessions, refunds, disputes, and webhook retries. |
+| Ledger authority | Supabase/Postgres | `credits`, `credit_ledger`, `plans`, RLS, `SECURITY DEFINER` functions, unique partial indexes, and non-negative balance checks. |
+| Application runtime | Backend TypeScript/Python | Calls SQL functions through a service-role/direct database connection; never writes ledger tables from client code. |
+| Customer notification state | Supabase/Postgres | Low-balance alert settings and deduplication state. Delivery is fire-and-forget outside the settlement invariant. |
+
+## Terms
+
+| Term | Meaning in this package |
+|---|---|
+| Credit | Spendable balance unit. Default convention is `1 credit = $1 USD`, stored as `NUMERIC(10,3)`. |
+| Reservation | A pre-dispatch atomic deduction by `reserve_credits()` for a generation. |
+| Charge | A terminal success confirmation. It is log-only unless it must re-deduct after a prior refund. |
+| Refund | A terminal failure/cancel/crash-recovery reversal of a prior reservation. |
+| Additive grant | Credits from Stripe invoice or checkout events. Grants add to existing balance and never reset rollover credits. |
+| Clawback | Deduction after a Stripe refund or dispute. Deducts what is available and records the rest as `uncollectible`. |
+| Uncollectible | Auditable shortfall when credits cannot be fully recovered without making balance negative. |
+| Backend-only boundary | Client roles must not read or write ledger tables directly; app servers call hardened functions. |
+
+## What this is not
+
+- Not a provider router, model catalog, or generation orchestrator.
+- Not a client-side balance cache; Supabase/Postgres is the source of truth.
+- Not a generic payment abstraction. The implemented reconciliation path is Stripe-specific.
+- Not BabySea's account, subscription, notification, or provider schema. You map your app's account IDs into the fortress functions.
 
 ## Why it's different
 
@@ -34,7 +80,7 @@ Every AI generation platform reinvents the same billing stack. They hit the same
 | **Variable cost generation.** Reserve $1 max for video, actual cost is $0.30. Most billing systems can't true-up. | `settle_credits(reserved, actual)` atomically returns the difference, or re-deducts on overshoot. Idempotent per generation. |
 | **Customer disputes the charge.** Stripe refunds the payment. Your books still show the credits as granted. | `charge.refunded` and `charge.dispute.created` webhooks claw back credits up to available balance. Shortfall recorded as `uncollectible` for accounting. Balance never goes negative. |
 | **Credit packs vanish on subscription renewal.** User buys $10 pack, then renewal "resets" the balance. Pack lost. | `add_credits` is additive (`tokens = tokens + amount`), never resets. Audit trail shows every grant. |
-| **Anyone with the anon key can read or forge ledger entries.** | Migration `003_security.sql` enables RLS, REVOKEs anon/authenticated access, and runs mutations as `SECURITY DEFINER` with locked `search_path`. |
+| **Anyone with the Supabase anon key can read or forge ledger entries.** | Migration `003_security.sql` enables RLS, REVOKEs anon/authenticated access, and runs mutations as `SECURITY DEFINER` with locked `search_path`. |
 
 ## Architecture
 
@@ -42,13 +88,13 @@ Every AI generation platform reinvents the same billing stack. They hit the same
 
 **Three pillars, based on the same credit-settlement invariants BabySea relies on:**
 
-- 🐘 **[PostgreSQL](https://www.postgresql.org)** - atomic transactions, CHECK constraints, unique partial indexes
+- 🐘 **[Supabase/Postgres](https://supabase.com)** - atomic transactions, CHECK constraints, RLS, `SECURITY DEFINER`, unique partial indexes
 - 💳 **[Stripe](https://stripe.com)** - subscriptions, one-time purchases, webhook reconciliation
 - 🔒 **Exactly-once guarantees** - idempotency keys at the SQL level, not the application level
 
 ## Quick start
 
-### Option 1. Apply the migrations to your Postgres database
+### Option 1. Apply the migrations to your Supabase/Postgres database
 
 ```bash
 git clone https://github.com/babysea-ai/ledger-fortress
@@ -69,6 +115,21 @@ That's it. You get:
 - **RLS enabled on every table** with anon/authenticated table access revoked; runtime access goes through your backend and fortress functions
 - All mutating functions run as `SECURITY DEFINER` with locked `search_path`
 
+### Option 1b. Validate against real Stripe + Supabase services
+
+Use the non-destructive smoke harness before promoting a deployment:
+
+```bash
+python -m venv /tmp/ledger-fortress-smoke-venv
+/tmp/ledger-fortress-smoke-venv/bin/pip install "psycopg[binary]>=3.2"
+STRIPE_SECRET_KEY="rk_test_..." \
+SUPABASE_PROJECT_ID="<project-ref>" \
+SUPABASE_DB_PASSWORD="..." \
+/tmp/ledger-fortress-smoke-venv/bin/python examples/real-stack-smoke/validate.py
+```
+
+See [`examples/real-stack-smoke/`](examples/real-stack-smoke/) for the required environment and cleanup behavior.
+
 ### Option 2. Use the TypeScript SDK
 
 The TypeScript SDK is not yet published to npm. Apply the Option 1 migrations first so the tables and SQL functions exist, then build it from a checked-out copy of the repo and install it into your application from that local path:
@@ -87,7 +148,7 @@ npm install /path/to/ledger-fortress/client/typescript
 import { LedgerFortress } from 'ledger-fortress';
 
 const fortress = new LedgerFortress({
-  databaseUrl: process.env.DATABASE_URL!,
+  databaseUrl: process.env.SUPABASE_DATABASE_URL ?? process.env.DATABASE_URL!,
 });
 
 async function runGeneration() {
@@ -146,7 +207,9 @@ import os
 
 from ledger_fortress import LedgerFortress
 
-fortress = LedgerFortress(database_url=os.environ["DATABASE_URL"])
+fortress = LedgerFortress(
+  database_url=os.environ.get("SUPABASE_DATABASE_URL") or os.environ["DATABASE_URL"],
+)
 
 # Reserve ➜ generate ➜ charge or refund
 reserved = fortress.reserve(
@@ -257,7 +320,7 @@ import { LedgerFortress } from 'ledger-fortress';
 import { createStripeWebhookHandler, verifyStripeSignature } from 'ledger-fortress/stripe';
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
-const fortress = new LedgerFortress({ databaseUrl: process.env.DATABASE_URL! });
+const fortress = new LedgerFortress({ databaseUrl: process.env.SUPABASE_DATABASE_URL ?? process.env.DATABASE_URL! });
 
 const handler = createStripeWebhookHandler({
   fortress,
@@ -406,7 +469,7 @@ One cron endpoint. Run it every 5 minutes:
 ```typescript
 import { LedgerFortress } from 'ledger-fortress';
 
-const fortress = new LedgerFortress({ databaseUrl: process.env.DATABASE_URL });
+const fortress = new LedgerFortress({ databaseUrl: process.env.SUPABASE_DATABASE_URL ?? process.env.DATABASE_URL });
 
 // Find reservations older than `windowMinutes` with no terminal settlement
 const result = await fortress.recoverOrphans({
@@ -447,18 +510,18 @@ Before going live with real Stripe payments:
 - [ ] Schedule `recoverOrphans()` every 5 minutes via cron
 - [ ] Map Stripe Price IDs into the `plans` table before enabling subscriptions
 - [ ] Configure alert thresholds per account before exposing low-balance UI
-- [ ] Cap `pg.Pool` connection limits well below your Postgres provider's connection cap (Supabase tiers cap at 60-500 depending on plan; default SDK setting is `max: 10`)
+- [ ] Cap `pg.Pool` connection limits well below your Supabase/Postgres connection cap (Supabase tiers cap at 60-500 depending on plan; default SDK setting is `max: 10`)
 - [ ] Restrict your Stripe API key to the [permissions listed in `docs/stripe-integration.md`](docs/stripe-integration.md)
 - [ ] Monitor `getUncollectibleTotal()` - non-zero values mean a customer owes credits (chargeback or true-up shortfall)
 - [ ] For variable-cost models, use `settle()` instead of `charge()` and reserve the maximum estimate
 
 ## Status
 
-`ledger-fortress` is **alpha** (v0.1.0). The reserve ➜ charge ➜ refund core is inspired by [BabySea](https://babysea.ai)'s production stack serving 80+ AI models across 12+ labs. This repo packages and generalizes those settlement invariants for community Stripe/Postgres deployments. APIs may change before 1.0. See [`CHANGELOG.md`](CHANGELOG.md).
+`ledger-fortress` is **alpha** (v0.1.2). The reserve ➜ charge ➜ refund core is inspired by [BabySea](https://babysea.ai)'s production stack serving 80+ AI models across 12+ labs. This repo packages and generalizes those settlement invariants for community Stripe + Supabase/Postgres deployments. APIs may change before 1.0. See [`CHANGELOG.md`](CHANGELOG.md).
 
 Both the TypeScript and Python SDKs build. The TypeScript SDK ships with tests. Neither is published to npm/PyPI yet for 0.1; install from source or pin to a commit SHA.
 
-## Roadmap
+## Current v0.1 surface
 
 - [x] Atomic reserve ➜ charge ➜ refund lifecycle
 - [x] Idempotent Stripe webhook reconciliation
@@ -466,12 +529,8 @@ Both the TypeScript and Python SDKs build. The TypeScript SDK ships with tests. 
 - [x] Credit alert state machine
 - [x] TypeScript + Python SDKs
 - [x] JSON schemas (event contract)
-- [x] PostgreSQL migrations
-- [ ] Redis cache layer for sub-ms `canGenerate()` checks
-- [ ] Multi-currency credit types (image credits vs. video credits)
-- [ ] Supabase Edge Function template for crash recovery
-- [ ] Drizzle/Prisma schema generation from migrations
-- [ ] Margin tracker (connect revenue to provider COGS via [adaptive-island](https://github.com/babysea-ai/adaptive-island))
+- [x] Supabase/Postgres migrations with RLS and `SECURITY DEFINER`
+- [x] Non-destructive real-stack smoke harness for Stripe + Supabase/Postgres
 
 ## Who's using it
 
@@ -493,4 +552,6 @@ We welcome PRs, issues, and design discussion. See [`CONTRIBUTING.md`](CONTRIBUT
 
 ## Acknowledgements
 
-Built on the shoulders of giants: **PostgreSQL** and **Stripe**, two of the most reliable pieces of infrastructure in production software. Thank you.
+Built with **Stripe** and **Supabase/Postgres**.
+
+Powered by open-source foundations including **PostgreSQL**, with Postgres-native security through **RLS** and **SECURITY DEFINER** functions deployed on Supabase, plus Stripe-native reconciliation through invoices, checkout sessions, refunds, and disputes.
