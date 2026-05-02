@@ -6,6 +6,10 @@ All notable changes to `ledger-fortress` will be documented here. The format fol
 
 ## [Unreleased]
 
+_No unreleased changes._
+
+## [0.1.1] - 2026-05-02
+
 ### Added
 - `get_plan_credits()` SQL boundary plus TypeScript/Python SDK helpers for Stripe Price ID credit lookup.
 - `charge_credits_detailed()` plus TypeScript/Python SDK helpers for distinguishing charged, duplicate/no-op, missing-reserve, already-settled, and shortfall outcomes.
