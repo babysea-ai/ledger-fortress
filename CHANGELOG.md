@@ -21,6 +21,7 @@ _No unreleased changes._
 - Switched SQL UUID defaults from `uuid-ossp`/`uuid_generate_v4()` to Supabase-friendly `pgcrypto`/`gen_random_uuid()`.
 - TypeScript SDK dev toolchain updated to TypeScript 6, Vitest 4, and Stripe 22 test dependency; the `pg.Pool` unit-test mock now uses a constructable class compatible with Vitest 4.
 - TypeScript SDK contributing docs now distinguish the Node.js 18+ runtime target from the Node.js 20.19+/22.12+ local development toolchain requirement.
+- README architecture section now uses an inline text diagram instead of a CDN-hosted image.
 - Replaced the unrelated roadmap with the current validated v0.1 surface.
 
 ### Validated

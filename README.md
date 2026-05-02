@@ -84,7 +84,27 @@ Every AI generation platform reinvents the same billing stack. They hit the same
 
 ## Architecture
 
-<img src="https://cdn.babysea.live/oss-architecture/ledger-fortress.png" alt="ledger-fortress by BabySea" />
+```text
+Stripe Checkout / Billing
+  │  checkout, invoice, refund, dispute webhooks
+  ▼
+Your backend webhook handler
+  │  maps Stripe customer + generation IDs to account IDs
+  ▼
+Supabase/Postgres fortress functions
+  ├─ add_credits(...)        paid grants and renewals
+  ├─ reserve_credits(...)    pre-generation balance gate
+  ├─ charge_credits(...)     final successful cost
+  ├─ refund_credits(...)     failed or cancelled work
+  ├─ settle_credits(...)     variable-cost true-up
+  └─ clawback_credits(...)   Stripe refunds and disputes
+  │
+  ▼
+credits balance + immutable credit_ledger
+  │
+  ▼
+RLS + SECURITY DEFINER backend-only mutation boundary
+```
 
 **Three pillars, based on the same credit-settlement invariants BabySea relies on:**
 
