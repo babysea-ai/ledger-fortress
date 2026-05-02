@@ -10,19 +10,17 @@ const mockPool = vi.hoisted(() => ({
 }));
 
 vi.mock('pg', () => {
+  class MockPool {
+    query = mockPool.query;
+    end = mockPool.end;
+    on = mockPool.on;
+  }
+
   return {
     default: {
-      Pool: vi.fn(() => ({
-        query: mockPool.query,
-        end: mockPool.end,
-        on: mockPool.on,
-      })),
+      Pool: MockPool,
     },
-    Pool: vi.fn(() => ({
-      query: mockPool.query,
-      end: mockPool.end,
-      on: mockPool.on,
-    })),
+    Pool: MockPool,
   };
 });
 
