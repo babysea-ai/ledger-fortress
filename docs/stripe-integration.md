@@ -74,7 +74,7 @@ const handler = createStripeWebhookHandler({
     });
     return payment?.accountId ?? null;
   },
-  // Optional: use get_plan_credits() / plans.tokens instead of amount_paid / 100.
+  // Optional: use get_plan_credits()/plans.tokens instead of amount_paid/100.
   resolveInvoiceCredits: async (invoice) => {
     const line = (invoice.lines as { data?: Array<{ price?: { id?: string } }> } | undefined)?.data?.[0];
     const priceId = line?.price?.id;

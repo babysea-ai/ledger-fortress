@@ -36,7 +36,7 @@ export interface StripeWebhookHandlerOptions {
   /**
    * Optional: override invoice-to-credit conversion.
    * Return null/undefined to skip credit allocation for this invoice.
-   * Runs before the default amount_paid / 100 path, including zero-amount invoices.
+   * Runs before the default amount_paid/100 path, including zero-amount invoices.
    */
   resolveInvoiceCredits?: (
     invoice: Record<string, unknown>,
@@ -44,7 +44,7 @@ export interface StripeWebhookHandlerOptions {
   /**
    * Optional: override checkout-session-to-credit conversion.
    * Return null/undefined to skip credit allocation for this checkout.
-   * Runs before the default amount_total / 100 path, including zero-amount checkouts.
+   * Runs before the default amount_total/100 path, including zero-amount checkouts.
    */
   resolveCheckoutCredits?: (
     session: Record<string, unknown>,

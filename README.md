@@ -10,7 +10,7 @@ Built on Stripe and Supabase/Postgres.**
 [![Open Source](https://img.shields.io/badge/open%20source-BabySea-48d1cc.svg)](https://babysea.ai)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Status](https://img.shields.io/badge/status-alpha-orange.svg)](#status)
-[![Sentry](https://img.shields.io/badge/Sentry-code%20guard-362D59.svg?logo=sentry&logoColor=white)](https://babysea-hq.sentry.io/projects/babysea-ai-ledger-fortress/)
+[![Sentry](https://img.shields.io/badge/Sentry-code%20guard-362D59.svg?logo=sentry&logoColor=white)](https://sentry.io)
 
 <br/>
 
@@ -85,7 +85,7 @@ Every AI generation platform reinvents the same billing stack. They hit the same
 ## Architecture
 
 ```text
-Stripe Checkout / Billing
+Stripe Checkout/Billing
   │  checkout, invoice, refund, dispute webhooks
   ▼
 Your backend webhook handler
@@ -307,7 +307,7 @@ if (reserved) {
 }
 ```
 
-For late success callbacks that arrive after a refund/crash-recovery path, use `chargeDetailed()` / `charge_detailed()` when you need to distinguish duplicate/no-op from a durable shortfall:
+For late success callbacks that arrive after a refund/crash-recovery path, use `chargeDetailed()`/`charge_detailed()` when you need to distinguish duplicate/no-op from a durable shortfall:
 
 ```typescript
 const result = await fortress.chargeDetailed({ accountId, generationId, amount });
@@ -349,7 +349,7 @@ const handler = createStripeWebhookHandler({
     return db.accounts.findByStripeCustomer(customerId);
   },
   resolveInvoiceCredits: async (invoice) => {
-    // Optional: override amount_paid / 100 with get_plan_credits() lookup
+    // Optional: override amount_paid/100 with get_plan_credits() lookup
     const priceId = invoice.lines?.data?.[0]?.price?.id;
     return priceId ? fortress.getPlanCredits(priceId) : null;
   },
@@ -370,7 +370,7 @@ export async function POST(req: Request) {
 
 // Handles:
 // - invoice.paid               (subscription renewal, idempotent via invoice ID)
-// - checkout.session.completed / async_payment_succeeded
+// - checkout.session.completed/async_payment_succeeded
 //                              (paid credit pack purchase, idempotent via order ID)
 // - charge.refunded            (clawback credits for the latest refund object)
 // - charge.dispute.created     (clawback disputed amount)
@@ -390,7 +390,7 @@ INSERT INTO plans (name, variant_id, tokens) VALUES
 
 Credits are **additive** (rollover, never reset). A Pro subscriber who buys a $10 credit pack gets $39 total, not $29.
 
-By default, the Stripe helper grants credits from the amount Stripe reports as paid (`amount_paid / 100` or `amount_total / 100`). Use `resolveInvoiceCredits` or `resolveCheckoutCredits` when you want `get_plan_credits()`/`plans.tokens` or another custom allocation rule instead. Custom resolvers run even when Stripe reports a zero amount, which supports fixed-credit plans, discounts, trials, and custom enterprise billing rules.
+By default, the Stripe helper grants credits from the amount Stripe reports as paid (`amount_paid/100` or `amount_total/100`). Use `resolveInvoiceCredits` or `resolveCheckoutCredits` when you want `get_plan_credits()`/`plans.tokens` or another custom allocation rule instead. Custom resolvers run even when Stripe reports a zero amount, which supports fixed-credit plans, discounts, trials, and custom enterprise billing rules.
 
 ## Variable cost true-up
 

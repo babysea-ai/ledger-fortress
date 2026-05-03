@@ -21,7 +21,7 @@ psql postgresql://fortress:fortress@localhost:5432/fortress
 
 ### TypeScript SDK
 
-The published SDK targets Node.js 18+ at runtime. Local TypeScript SDK development uses the Vitest 4 / Vite 8 toolchain and requires Node.js 20.19+ or 22.12+.
+The published SDK targets Node.js 18+ at runtime. Local TypeScript SDK development uses the Vitest 4/Vite 8 toolchain and requires Node.js 20.19+ or 22.12+.
 
 ```bash
 cd client/typescript

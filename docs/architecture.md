@@ -19,7 +19,7 @@ This document explains the Stripe + Supabase/Postgres settlement loops, the stor
 
 ```
 your app  ➜  reserve(account, generation, amount)  ➜  provider
-         ←  charge(...) / refund(...) / settle(...) ←  webhook / callback
+         ←  charge(...)/refund(...)/settle(...) ←  webhook/callback
 ```
 
 - `reserve_credits` is a single atomic balance check and deduction.
@@ -29,8 +29,8 @@ your app  ➜  reserve(account, generation, amount)  ➜  provider
 ### 2. The reconciliation loop (async, idempotent)
 
 ```
-Stripe webhooks / provider webhooks / crash recovery cron
-    ➜ add_credits / charge_credits / refund_credits / settle_credits / clawback_credits
+Stripe webhooks/provider webhooks/crash recovery cron
+    ➜ add_credits/charge_credits/refund_credits/settle_credits/clawback_credits
     ➜ credit_ledger + credits balance
 ```
 
@@ -45,7 +45,7 @@ Stripe webhooks / provider webhooks / crash recovery cron
 |---|---|---|
 | `plans` | one row per Stripe price | Maps price IDs to credit grants |
 | `credits` | one row per account | Current spendable balance with `CHECK (tokens >= 0)` |
-| `credit_ledger` | immutable event log | Reserve / charge / refund / trueup / add / clawback / uncollectible entries |
+| `credit_ledger` | immutable event log | Reserve/charge/refund/trueup/add/clawback/uncollectible entries |
 | `credit_alert_settings` | one row per account | Threshold and channel configuration |
 | `credit_alert_log` | one row per threshold crossing | Deduplicates low-balance alerts |
 
