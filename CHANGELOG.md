@@ -6,20 +6,22 @@ All notable changes to `ledger-fortress` will be documented here. The format fol
 
 ## [Unreleased]
 
-### Changed
+### Added
+- Added `BabySea OSS taxonomy` in `README.md`.
 
+### Changed
 - Normalized the Apache 2.0 `LICENSE` wording to the canonical BabySea OSS format used across public packages.
 
 ## [0.1.2] - 2026-05-02
 
 ### Added
-- Non-destructive `examples/real-stack-smoke/` validation harness for real Stripe test-mode API credentials and a real Supabase/Postgres project using a disposable schema.
-- Explicit Stripe + Supabase/Postgres stack contract, terminology, and non-goals in the README and architecture docs.
+- Non-destructive `examples/real-stack-smoke/` validation harness for real Stripe test-mode API credentials and a real Supabase project using a disposable schema.
+- Explicit Stripe + Supabase stack contract, terminology, and non-goals in the README and architecture docs.
 - Sentry code-guard for the `babysea-ai/ledger-fortress` OSS project.
 - Standalone OSS security policy and Dependabot dependency-security configuration for the public `babysea-ai/ledger-fortress` repository.
 
 ### Changed
-- Reframed the public package metadata and SDK docs from generic Stripe/Postgres to Stripe + Supabase/Postgres.
+- Reframed the public package metadata and SDK docs to Stripe + Supabase.
 - Switched SQL UUID defaults from `uuid-ossp`/`uuid_generate_v4()` to Supabase-friendly `pgcrypto`/`gen_random_uuid()`.
 - TypeScript SDK dev toolchain updated to TypeScript 6, Vitest 4, and Stripe 22 test dependency; the `pg.Pool` unit-test mock now uses a constructable class compatible with Vitest 4.
 - TypeScript SDK contributing docs now distinguish the Node.js 18+ runtime target from the Node.js 20.19+/22.12+ local development toolchain requirement.

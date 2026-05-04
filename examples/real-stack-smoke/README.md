@@ -1,11 +1,11 @@
 # ledger-fortress real-stack smoke
 
-This smoke test validates `ledger-fortress` against real **Stripe + Supabase/Postgres** services without mutating your production ledger tables.
+This smoke test validates `ledger-fortress` against real **Stripe + Supabase** services without mutating your production ledger tables.
 
 It is intentionally narrower than the destructive E2E simulation in `client/typescript/test/e2e-simulation.ts`:
 
 - Creates one disposable Stripe test customer and deletes it in cleanup.
-- Creates one disposable Supabase/Postgres schema named `ledger_fortress_smoke_<run_id>`.
+- Creates one disposable Supabase schema named `ledger_fortress_smoke_<run_id>`.
 - Applies the OSS migrations inside that disposable schema with the function `search_path` locked to that schema.
 - Exercises additive Stripe-style grants, reserve, charge, refund, late-charge shortfall, true-up, clawback, alerts, and RLS/grant posture.
 - Drops the disposable schema by default.
@@ -17,7 +17,7 @@ Use a Stripe **test-mode** restricted key. Live keys are always refused by this 
 ```bash
 export STRIPE_SECRET_KEY="rk_test_..."      # or STRIPE_SECRET
 
-# Option A: full Supabase/Postgres URL
+# Option A: full Supabase URL
 export SUPABASE_DATABASE_URL="postgresql://...?...sslmode=require"
 
 # Option B: build the Supabase pooler URL from project settings
@@ -46,7 +46,7 @@ The script prints only sanitized identifiers and never prints secret values.
 
 ## What it proves
 
-- The migrations load on Supabase/Postgres in a disposable schema.
+- The migrations load on Supabase in a disposable schema.
 - `SECURITY DEFINER` functions keep a locked, schema-specific `search_path`.
 - Supabase roles have RLS enabled and no client table grants by default.
 - Stripe API authentication works with a restricted test key.

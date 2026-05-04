@@ -1,6 +1,6 @@
 # ledger-fortress Python SDK
 
-Atomic credit settlement for async AI workloads, built on Stripe and Supabase/Postgres.
+Atomic credit settlement for async AI workloads, built on Stripe and Supabase.
 
 See the repository README and docs for migrations, architecture, and end-to-end setup:
 

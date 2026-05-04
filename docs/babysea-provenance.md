@@ -1,6 +1,6 @@
 # BabySea provenance and OSS scope
 
-`ledger-fortress` is inspired by BabySea's production credit system. The OSS package keeps the same core invariants and generalizes the integration points so other teams can use their own Stripe account, Supabase/Postgres database, account table, generation table, and webhook stack.
+`ledger-fortress` is inspired by BabySea's production credit system. The OSS package keeps the same core invariants and generalizes the integration points so other teams can use their own Stripe account, Supabase database, account table, generation table, and webhook stack.
 
 The grounding was checked against BabySea's implementation paths:
 
@@ -28,7 +28,7 @@ These pieces map to BabySea's current production approach:
 
 ## Generalized for the OSS package
 
-These pieces are included because they are natural extensions of the same ledger model for community Stripe + Supabase/Postgres deployments:
+These pieces are included because they are natural extensions of the same ledger model for community Stripe + Supabase deployments:
 
 | Area | Why it exists in OSS |
 |---|---|
@@ -44,4 +44,4 @@ These pieces are included because they are natural extensions of the same ledger
 - No hosted BabySea secrets, plan IDs, customer IDs, or deployment-specific configuration are included.
 - No application authorization policy is assumed beyond the account ID passed by the adopter's backend.
 
-The invariant is intentionally small: Stripe moves money, Supabase/Postgres owns credit balance and ledger transitions, and the adopter's application maps its account and generation model into those functions.
+The invariant is intentionally small: Stripe moves money, Supabase owns credit balance and ledger transitions, and the adopter's application maps its account and generation model into those functions.

@@ -3,11 +3,12 @@
 # 🏰 ledger-fortress
 
 **Atomic credit settlement for async AI workloads.<br/>
-Built on Stripe and Supabase/Postgres.**
+Built on Stripe and Supabase.**
 
 <br/>
 
 [![Open Source](https://img.shields.io/badge/open%20source-BabySea-48d1cc.svg)](https://babysea.ai)
+![BabySea OSS Primitives](https://img.shields.io/badge/oss%20primitives-BabySea-ea580c.svg)](#babysea-oss-taxonomy)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Status](https://img.shields.io/badge/status-alpha-orange.svg)](#status)
 [![Sentry](https://img.shields.io/badge/Sentry-code%20guard-362D59.svg?logo=sentry&logoColor=white)](https://sentry.io)
@@ -26,13 +27,39 @@ Built on Stripe and Supabase/Postgres.**
 
 </div>
 
+---
+
+## BabySea OSS taxonomy
+
+BabySea open source projects are organized into three categories:
+
+### OSS Primitives
+
+[![BabySea OSS Primitives](https://img.shields.io/badge/oss%20primitives-BabySea-ea580c.svg)](#babysea-oss-taxonomy)
+
+Production-derived infrastructure patterns extracted from BabySea's execution control plane. These projects isolate one hard system invariant at a time, such as provider routing, credit settlement, idempotency, failover, reconciliation, or operational safety.
+
+### SDKs
+
+[![BabySea SDKs](https://img.shields.io/badge/sdks-BabySea-4f46e5.svg)](#babysea-oss-taxonomy)
+
+Typed developer entry points into BabySea's execution control plane. SDKs provide application developers with a clean interface for creating, tracking, managing, and settling generative-media workloads without rebuilding provider-specific lifecycle logic.
+
+### OSS Starters
+
+[![BabySea OSS Starters](https://img.shields.io/badge/oss%20starters-BabySea-0284c7.svg)](#babysea-oss-taxonomy)
+
+Deployable reference applications that help builders adopt BabySea patterns quickly. Starters combine product UI, auth, billing, storage, rate limits, and BabySea SDK execution into working examples optimized for onboarding and implementation.
+
+---
+
 ## What this is
 
-`ledger-fortress` is an open-source credit-settlement engine inspired by the core invariants used in [BabySea](https://babysea.ai)'s production credit system: atomic reserve ➜ charge ➜ refund, database-enforced idempotency, Stripe webhook reconciliation, and crash recovery for async AI generations. The OSS package generalizes that pattern for Stripe + Supabase/Postgres teams that need subscriptions, credit packs, variable-cost settlement, refunds, disputes, and auditable shortfalls.
+`ledger-fortress` is an open-source credit-settlement engine inspired by the core invariants used in [BabySea](https://babysea.ai)'s production credit system: atomic reserve ➜ charge ➜ refund, database-enforced idempotency, Stripe webhook reconciliation, and crash recovery for async AI generations. The OSS package generalizes that pattern for Stripe + Supabase teams that need subscriptions, credit packs, variable-cost settlement, refunds, disputes, and auditable shortfalls.
 
 For the exact split between BabySea-mirrored behavior and OSS-generalized extensions, see [`docs/babysea-provenance.md`](docs/babysea-provenance.md).
 
-If you run an **AI generation platform** (images, video, audio, 3D - anything where the workload runs asynchronously for 2-120 seconds), this repo gives you the entire credit lifecycle. Apply the SQL migrations to Supabase/Postgres, then call the SDK (TypeScript or Python) from your backend.
+If you run an **AI generation platform** (images, video, audio, 3D - anything where the workload runs asynchronously for 2-120 seconds), this repo gives you the entire credit lifecycle. Apply the SQL migrations to Supabase, then call the SDK (TypeScript or Python) from your backend.
 
 You bring your Stripe account and your Supabase project. The fortress handles the ledger boundary.
 
@@ -43,9 +70,9 @@ You bring your Stripe account and your Supabase project. The fortress handles th
 | Layer | Stack | Contract |
 |---|---|---|
 | External money movement | Stripe | Subscriptions, invoices, checkout sessions, refunds, disputes, and webhook retries. |
-| Ledger authority | Supabase/Postgres | `credits`, `credit_ledger`, `plans`, RLS, `SECURITY DEFINER` functions, unique partial indexes, and non-negative balance checks. |
+| Ledger authority | Supabase | `credits`, `credit_ledger`, `plans`, RLS, `SECURITY DEFINER` functions, unique partial indexes, and non-negative balance checks. |
 | Application runtime | Backend TypeScript/Python | Calls SQL functions through a service-role/direct database connection; never writes ledger tables from client code. |
-| Customer notification state | Supabase/Postgres | Low-balance alert settings and deduplication state. Delivery is fire-and-forget outside the settlement invariant. |
+| Customer notification state | Supabase | Low-balance alert settings and deduplication state. Delivery is fire-and-forget outside the settlement invariant. |
 
 ## Terms
 
@@ -63,7 +90,7 @@ You bring your Stripe account and your Supabase project. The fortress handles th
 ## What this is not
 
 - Not a provider router, model catalog, or generation orchestrator.
-- Not a client-side balance cache; Supabase/Postgres is the source of truth.
+- Not a client-side balance cache; Supabase is the source of truth.
 - Not a generic payment abstraction. The implemented reconciliation path is Stripe-specific.
 - Not BabySea's account, subscription, notification, or provider schema. You map your app's account IDs into the fortress functions.
 
@@ -91,7 +118,7 @@ Stripe Checkout/Billing
 Your backend webhook handler
   │  maps Stripe customer + generation IDs to account IDs
   ▼
-Supabase/Postgres fortress functions
+Supabase fortress functions
   ├─ add_credits(...)        paid grants and renewals
   ├─ reserve_credits(...)    pre-generation balance gate
   ├─ charge_credits(...)     final successful cost
@@ -108,13 +135,13 @@ RLS + SECURITY DEFINER backend-only mutation boundary
 
 **Three pillars, based on the same credit-settlement invariants BabySea relies on:**
 
-- 🐘 **[Supabase/Postgres](https://supabase.com)** - atomic transactions, CHECK constraints, RLS, `SECURITY DEFINER`, unique partial indexes
+- 🐘 **[Supabase](https://supabase.com)** - atomic transactions, CHECK constraints, RLS, `SECURITY DEFINER`, unique partial indexes
 - 💳 **[Stripe](https://stripe.com)** - subscriptions, one-time purchases, webhook reconciliation
 - 🔒 **Exactly-once guarantees** - idempotency keys at the SQL level, not the application level
 
 ## Quick start
 
-### Option 1. Apply the migrations to your Supabase/Postgres database
+### Option 1. Apply the migrations to your Supabase database
 
 ```bash
 git clone https://github.com/babysea-ai/ledger-fortress
@@ -530,14 +557,14 @@ Before going live with real Stripe payments:
 - [ ] Schedule `recoverOrphans()` every 5 minutes via cron
 - [ ] Map Stripe Price IDs into the `plans` table before enabling subscriptions
 - [ ] Configure alert thresholds per account before exposing low-balance UI
-- [ ] Cap `pg.Pool` connection limits well below your Supabase/Postgres connection cap (Supabase tiers cap at 60-500 depending on plan; default SDK setting is `max: 10`)
+- [ ] Cap `pg.Pool` connection limits well below your Supabase connection cap (Supabase tiers cap at 60-500 depending on plan; default SDK setting is `max: 10`)
 - [ ] Restrict your Stripe API key to the [permissions listed in `docs/stripe-integration.md`](docs/stripe-integration.md)
 - [ ] Monitor `getUncollectibleTotal()` - non-zero values mean a customer owes credits (chargeback or true-up shortfall)
 - [ ] For variable-cost models, use `settle()` instead of `charge()` and reserve the maximum estimate
 
 ## Status
 
-`ledger-fortress` is **alpha** (v0.1.2). The reserve ➜ charge ➜ refund core is inspired by [BabySea](https://babysea.ai)'s production stack serving 80+ AI models across 12+ labs. This repo packages and generalizes those settlement invariants for community Stripe + Supabase/Postgres deployments. APIs may change before 1.0. See [`CHANGELOG.md`](CHANGELOG.md).
+`ledger-fortress` is **alpha** (v0.1.2). The reserve ➜ charge ➜ refund core is inspired by [BabySea](https://babysea.ai)'s production stack serving 80+ AI models across 12+ labs. This repo packages and generalizes those settlement invariants for community Stripe + Supabase deployments. APIs may change before 1.0. See [`CHANGELOG.md`](CHANGELOG.md).
 
 Both the TypeScript and Python SDKs build. The TypeScript SDK ships with tests. Neither is published to npm/PyPI yet for 0.1; install from source or pin to a commit SHA.
 
@@ -549,8 +576,8 @@ Both the TypeScript and Python SDKs build. The TypeScript SDK ships with tests. 
 - [x] Credit alert state machine
 - [x] TypeScript + Python SDKs
 - [x] JSON schemas (event contract)
-- [x] Supabase/Postgres migrations with RLS and `SECURITY DEFINER`
-- [x] Non-destructive real-stack smoke harness for Stripe + Supabase/Postgres
+- [x] Supabase migrations with RLS and `SECURITY DEFINER`
+- [x] Non-destructive real-stack smoke harness for Stripe + Supabase
 
 ## Who's using it
 
@@ -572,6 +599,6 @@ We welcome PRs, issues, and design discussion. See [`CONTRIBUTING.md`](CONTRIBUT
 
 ## Acknowledgements
 
-Built with **Stripe** and **Supabase/Postgres**.
+Built with **Stripe** and **Supabase**.
 
 Powered by open-source foundations including **PostgreSQL**, with Postgres-native security through **RLS** and **SECURITY DEFINER** functions deployed on Supabase, plus Stripe-native reconciliation through invoices, checkout sessions, refunds, and disputes.

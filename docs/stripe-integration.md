@@ -1,6 +1,6 @@
 # Stripe Integration Guide
 
-`ledger-fortress` integrates with Stripe to convert subscription payments and credit pack purchases into spendable credits stored in Supabase/Postgres.
+`ledger-fortress` integrates with Stripe to convert subscription payments and credit pack purchases into spendable credits stored in Supabase.
 
 ## Overview
 

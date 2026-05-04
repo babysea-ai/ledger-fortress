@@ -2,7 +2,7 @@
 # Copyright 2026 BabySea, Inc.
 # Licensed under the Apache License, Version 2.0.
 
-"""Safe real-service smoke validation for Stripe + Supabase/Postgres.
+"""Safe real-service smoke validation for Stripe + Supabase.
 
 The harness applies ledger-fortress migrations inside a disposable Supabase
 schema, creates a disposable Stripe test customer, exercises the credit ledger
