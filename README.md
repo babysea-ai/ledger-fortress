@@ -37,11 +37,11 @@ BabySea open source projects are organized into three categories:
 [![BabySea SDKs](https://img.shields.io/badge/sdks-BabySea-4f46e5.svg)](#babysea-oss-taxonomy)
 [![BabySea OSS Starters](https://img.shields.io/badge/oss%20starters-BabySea-0284c7.svg)](#babysea-oss-taxonomy)
 
-| Category | Description |
-| --- | --- |
+| Category           | Description                                                                                                                                                                                                                                                         |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **OSS Primitives** | Production-derived infrastructure patterns extracted from BabySea's execution control plane. These projects isolate one hard system invariant at a time, such as provider routing, credit settlement, idempotency, failover, reconciliation, or operational safety. |
-| **SDKs** | Typed developer entry points into BabySea's execution control plane. SDKs provide application developers with a clean interface for creating, tracking, managing, and settling generative-media workloads without rebuilding provider-specific lifecycle logic. |
-| **OSS Starters** | Deployable reference applications that help builders adopt BabySea patterns quickly. Starters combine product UI, auth, billing, storage, rate limits, and BabySea SDK execution into working examples optimized for onboarding and implementation. |
+| **SDKs**           | Typed developer entry points into BabySea's execution control plane. SDKs provide application developers with a clean interface for creating, tracking, managing, and settling generative-media workloads without rebuilding provider-specific lifecycle logic.     |
+| **OSS Starters**   | Deployable reference applications that help builders adopt BabySea patterns quickly. Starters combine product UI, auth, billing, storage, rate limits, and BabySea SDK execution into working examples optimized for onboarding and implementation.                 |
 
 ---
 

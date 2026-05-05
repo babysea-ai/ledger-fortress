@@ -9,6 +9,7 @@ All notable changes to `ledger-fortress` will be documented here. The format fol
 ### Added
 
 - Added `BabySea OSS taxonomy` in `README.md`.
+- Fix table formatting in `README.md`.
 
 ### Changed
 
