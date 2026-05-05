@@ -4,7 +4,7 @@
 """
 ledger-fortress Python SDK.
 
-Atomic credit settlement for async AI workloads.
+Atomic Stripe + Supabase credit ledger for async AI workloads.
 Wraps the PostgreSQL functions with a type-safe interface.
 """
 
@@ -53,19 +53,6 @@ class RecoverResult:
 
 
 @dataclass(frozen=True)
-class ClawbackResult:
-    applied: bool
-    uncollectible: float
-
-
-@dataclass(frozen=True)
-class ChargeResult:
-    status: str
-    charged: bool
-    uncollectible: float
-
-
-@dataclass(frozen=True)
 class AlertThreshold:
     threshold: float
     balance: float
@@ -101,7 +88,7 @@ def _assert_credit_amount(
 
 
 class LedgerFortress:
-    """Atomic credit settlement for async AI workloads."""
+    """Atomic Stripe + Supabase credit ledger for async AI workloads."""
 
     def __init__(
         self,
@@ -205,44 +192,16 @@ class LedgerFortress:
     ) -> bool:
         """
         Confirm a reservation after successful generation.
-        Log-only: no balance change (unless out-of-order with refund).
+        Log-only: no balance change unless a prior refund must be corrected.
 
         Idempotent: second call for the same generation_id is a no-op.
         """
-        result = self.charge_detailed(
-            account_id=account_id,
-            generation_id=generation_id,
-            amount=amount,
-            model=model,
-        )
-        return result.charged
-
-    def charge_detailed(
-        self,
-        *,
-        account_id: str,
-        generation_id: str,
-        amount: float,
-        model: str | None = None,
-    ) -> ChargeResult:
-        """
-        Confirm a reservation and return structured status.
-
-        Use this when the application needs to distinguish duplicate/no-op
-        from a late charge shortfall recorded as uncollectible.
-        """
         _assert_credit_amount(amount)
-        rows = self._query(
-            "SELECT * FROM charge_credits_detailed(%s, %s, %s, %s)",
+        result = self._query_scalar(
+            "SELECT charge_credits(%s, %s, %s, %s)",
             (account_id, amount, generation_id, model),
         )
-        row = rows[0] if rows else {"status": "duplicate", "uncollectible": 0}
-        status = str(row.get("status") or "duplicate")
-        return ChargeResult(
-            status=status,
-            charged=status == "charged",
-            uncollectible=float(row.get("uncollectible") or 0),
-        )
+        return bool(result)
 
     def refund(
         self,
@@ -257,7 +216,6 @@ class LedgerFortress:
 
         Guards:
         - If already charged ➜ no-op (prevents free output)
-        - If already settled via true-up ➜ no-op
         - If already refunded ➜ no-op (prevents double-refund)
 
         Idempotent: safe to call from webhooks, crash recovery, and cancel endpoints.
@@ -289,71 +247,6 @@ class LedgerFortress:
             (account_id, amount, description, idempotency_key),
         )
         return bool(result)
-
-    def clawback(
-        self,
-        *,
-        account_id: str,
-        amount: float,
-        idempotency_key: str,
-        reason: str = "stripe_refund",
-    ) -> ClawbackResult:
-        """
-        Claw back credits from a Stripe refund or dispute.
-
-        Deducts from balance up to the available amount. Any shortfall is
-        recorded as uncollectible; balance never goes negative.
-        """
-        _assert_credit_amount(amount)
-        if not idempotency_key:
-            raise ValueError("idempotency_key is required")
-
-        rows = self._query(
-            "SELECT * FROM clawback_credits(%s, %s, %s, %s)",
-            (account_id, amount, idempotency_key, reason),
-        )
-        if not rows:
-            return ClawbackResult(applied=False, uncollectible=0.0)
-
-        row = rows[0]
-        return ClawbackResult(
-            applied=bool(row.get("applied")),
-            uncollectible=float(row.get("uncollectible") or 0),
-        )
-
-    def settle(
-        self,
-        *,
-        account_id: str,
-        generation_id: str,
-        reserved_amount: float,
-        actual_amount: float,
-        model: str | None = None,
-    ) -> bool:
-        """
-        Settle a variable-cost generation.
-
-        Reserve the maximum estimate first, then settle with the actual cost.
-        If actual < reserved, the difference is returned. If actual > reserved,
-        the overage is deducted or recorded as uncollectible.
-        """
-        _assert_credit_amount(reserved_amount, "reserved_amount")
-        _assert_credit_amount(actual_amount, "actual_amount", allow_zero=True)
-        if not generation_id:
-            raise ValueError("generation_id is required")
-
-        result = self._query_scalar(
-            "SELECT settle_credits(%s, %s, %s, %s, %s)",
-            (account_id, generation_id, reserved_amount, actual_amount, model),
-        )
-        return bool(result)
-
-    def get_uncollectible_total(self, account_id: str) -> float:
-        """Return total uncollectible shortfall for an account."""
-        result = self._query_scalar(
-            "SELECT get_uncollectible_total(%s)", (account_id,)
-        )
-        return float(result) if result is not None else 0.0
 
     def list_ledger(
         self,

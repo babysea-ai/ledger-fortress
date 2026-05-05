@@ -1,47 +1,47 @@
 # BabySea provenance and OSS scope
 
-`ledger-fortress` is inspired by BabySea's production credit system. The OSS package keeps the same core invariants and generalizes the integration points so other teams can use their own Stripe account, Supabase database, account table, generation table, and webhook stack.
+`ledger-fortress` is grounded in BabySea's real Stripe + Supabase credit implementation. The OSS package keeps the same public ledger lifecycle and replaces BabySea-specific account, generation, and dashboard tables with adopter-supplied IDs.
 
-The grounding was checked against BabySea's implementation paths:
+The grounding was validated against BabySea's internal production implementation:
 
-- `apps/web/supabase/schemas/21-credits.sql` for `plans`, `credits`, `credit_ledger`, `reserve_credits`, `charge_credits`, `refund_credits`, `add_credits`, and ledger idempotency indexes.
-- `apps/web/supabase/schemas/34-credit-alerts.sql` for the low-balance alert state machine.
-- `apps/web/lib/inference-hub/credit/service.ts` for request-time reserve, charge confirmation, refund, and alert reset/check calls.
-- `apps/web/app/api/billing/webhook/route.ts` for Stripe invoice/checkout reconciliation into `add_credits` with `invoice:*` and `order:*` idempotency keys.
-- `apps/web/app/home/[account]/billing/_lib/server/team-billing.service.ts` for the server-side credit-pack active-subscription guard.
+- Credit schema (plans, credits, credit_ledger, `reserve_credits`, `charge_credits`, `refund_credits`, `add_credits`, and ledger idempotency indexes).
+- Credit alert schema (low-balance alert settings and fired-threshold deduplication).
+- Credit service module (request-time reserve, charge confirmation, refund, and alert reset/check calls).
+- Billing webhook handler (Stripe `invoice.paid` and `checkout.session.completed` reconciliation into `add_credits` with `invoice:*` and `order:*` idempotency keys).
+- Cleanup service and cron handler (scheduled crash cleanup that marks stale pending generations failed and refunds reserved credits).
+- Team billing service plus the billing webhook stale-session check for credit-pack active-subscription guards.
 
-## Directly mirrored from BabySea
-
-These pieces map to BabySea's current production approach:
+## BabySea-derived OSS surface
 
 | Area | BabySea pattern | OSS surface |
 |---|---|---|
-| Atomic reserve | One `UPDATE credits SET tokens = tokens - cost WHERE tokens >= cost` before dispatching generation work | `reserve_credits()`/`fortress.reserve()` |
-| Charge confirmation | Success callbacks write a log-only charge because reserve already deducted the balance | `charge_credits()`/`fortress.charge()` |
-| Failure refund | Failure, cancellation, and cleanup paths refund only if the generation was not already charged or refunded | `refund_credits()`/`fortress.refund()` |
-| Additive Stripe grants | Subscription invoices and credit packs add to the current balance; renewal never resets credit packs | `add_credits()`/`fortress.addCredits()` |
-| Idempotency | Database unique indexes, not in-memory handler state | partial indexes on ledger rows |
-| Crash recovery | A scheduled cleanup finds stale pending generations and refunds reserved credits safely | `find_orphaned_reservations()`/`fortress.recoverOrphans()` |
-| Low-balance alerts | Threshold state machine: fire once per descent, re-arm after top-up/refund | `check_credit_alerts()` and `reset_credit_alerts()` |
+| Atomic reserve | One guarded balance deduction before dispatching generation work | `reserve_credits()` / `fortress.reserve()` |
+| Charge confirmation | Success callbacks write a charge ledger row because reserve already deducted balance | `charge_credits()` / `fortress.charge()` |
+| Failure refund | Failure, cancellation, and cleanup paths return a prior reservation only when it was not already charged or refunded | `refund_credits()` / `fortress.refund()` |
+| Additive Stripe grants | Subscription invoices and credit packs add to the current balance; renewal never resets credit packs | `add_credits()` / `fortress.addCredits()` |
+| Stripe idempotency keys | Invoices use `invoice:{id}`; credit packs use `order:{id}` | Stripe helper and `add_credits()` idempotency index |
+| Crash recovery | Scheduled cleanup finds stale pending work and safely refunds reserved credits | `find_orphaned_reservations()` / `fortress.recoverOrphans()` |
+| Low-balance alerts | Fire once per threshold descent, re-arm after top-up/refund | `check_credit_alerts()` and `reset_credit_alerts()` |
 | Stale checkout guard | Credit pack redemption is guarded at webhook time, not only checkout creation time | `hasActiveSubscription` callback |
-| Security boundary | Credit tables are backend-owned financial state, not client-writable cache | BabySea uses Supabase RLS and service-role mutations; OSS hardens further by revoking client table grants and locking mutating functions with `SECURITY DEFINER` and `search_path` |
+| Security boundary | Credit tables are backend-owned financial state, not client-writable cache | Supabase RLS, backend/service-role calls, `SECURITY DEFINER`, locked `search_path` |
 
-## Generalized for the OSS package
+## Explicitly not included
 
-These pieces are included because they are natural extensions of the same ledger model for community Stripe + Supabase deployments:
+These flows are not present in BabySea's current credit implementation and are intentionally not part of this OSS package:
 
-| Area | Why it exists in OSS |
+| Excluded flow | Reason |
 |---|---|
-| `settle_credits()` | Some generation stacks reserve a maximum estimate and only know actual cost after the provider returns. BabySea's current model pricing is mostly fixed before dispatch, but the same reserve-first ledger can support variable-cost settlement. |
-| `clawback_credits()` | Stripe refunds and disputes can arrive after credits are spent. The OSS package includes a reusable accounting path for teams that need refund/dispute reconciliation. |
-| `uncollectible` ledger entries | If a refund, dispute, or true-up cannot be fully recovered from the current balance, the shortfall is explicit and auditable instead of making the balance negative. |
-| Python parity | BabySea's app is TypeScript, but community adopters often run Python workers. The Python SDK wraps the same SQL functions rather than introducing a second implementation. |
+| Variable-cost terminal reconciliation | BabySea computes generation cost before reserve from model, duration, resolution, and audio-mode inputs, then confirms or refunds that amount. |
+| Automatic Stripe refund/dispute credit deductions | BabySea does not automatically convert Stripe refunds or disputes into credit ledger deductions today. |
+| Debt/shortfall ledger entries | No BabySea credit table or SDK type tracks credit debt/shortfall. The ledger balance remains non-negative and only uses `reserve`, `charge`, `refund`, and `add`. |
+| Stripe refund/dispute webhook handlers | The production billing webhook route only allocates credits from subscription invoices and checkout sessions. |
 
 ## Non-goals
 
 - No BabySea internal provider routing logic is included.
 - No BabySea account, subscription, file asset, notification, email, or webhook delivery tables are required.
 - No hosted BabySea secrets, plan IDs, customer IDs, or deployment-specific configuration are included.
+- No generic payment abstraction is provided; the implemented public contract is Stripe + Supabase.
 - No application authorization policy is assumed beyond the account ID passed by the adopter's backend.
 
-The invariant is intentionally small: Stripe moves money, Supabase owns credit balance and ledger transitions, and the adopter's application maps its account and generation model into those functions.
+The invariant is intentionally small: Stripe records paid invoices and checkout sessions, Supabase owns credit balance and ledger transitions, and the adopter's backend maps its account and generation model into those functions.

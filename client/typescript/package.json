@@ -1,7 +1,7 @@
 {
   "name": "ledger-fortress",
   "version": "0.1.2",
-  "description": "Atomic credit settlement for async AI workloads. Built on Stripe and Supabase.",
+  "description": "Atomic Stripe + Supabase credit ledger for async AI workloads.",
   "license": "Apache-2.0",
   "author": "BabySea, Inc. <dev@babysea.ai>",
   "homepage": "https://github.com/babysea-ai/ledger-fortress",
@@ -24,7 +24,6 @@
     "inference-providers",
     "async-jobs",
     "billing",
-    "settlement",
     "credits"
   ],
   "main": "dist/index.js",

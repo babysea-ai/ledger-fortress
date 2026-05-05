@@ -6,18 +6,15 @@ import { type StripeEvent, createStripeWebhookHandler } from '../src/stripe.js';
 const fortress = {
   addCredits: vi.fn(),
   resetAlerts: vi.fn(),
-  clawback: vi.fn(),
 } as unknown as LedgerFortress;
 
 const addCredits = fortress.addCredits as ReturnType<typeof vi.fn>;
 const resetAlerts = fortress.resetAlerts as ReturnType<typeof vi.fn>;
-const clawback = fortress.clawback as ReturnType<typeof vi.fn>;
 
 describe('Stripe webhook handler', () => {
   beforeEach(() => {
     addCredits.mockReset().mockResolvedValue(true);
     resetAlerts.mockReset().mockResolvedValue(0);
-    clawback.mockReset().mockResolvedValue({ applied: true, uncollectible: 0 });
   });
 
   it('uses a custom invoice credit resolver when provided', async () => {
@@ -139,9 +136,7 @@ describe('Stripe webhook handler', () => {
     expect(addCredits).not.toHaveBeenCalled();
   });
 
-  it('reports duplicate refund clawbacks as skipped duplicates', async () => {
-    clawback.mockResolvedValueOnce({ applied: false, uncollectible: 0 });
-
+  it('ignores Stripe refund events because they are outside the BabySea-derived grant flow', async () => {
     const handler = createStripeWebhookHandler({
       fortress,
       resolveAccountId: async () => 'acct_123',
@@ -160,7 +155,7 @@ describe('Stripe webhook handler', () => {
 
     const result = await handler(event);
 
-    expect(result.action).toBe('skipped_duplicate');
-    expect(result.idempotencyKey).toBe('refund:re_123');
+    expect(result.handled).toBe(false);
+    expect(addCredits).not.toHaveBeenCalled();
   });
 });

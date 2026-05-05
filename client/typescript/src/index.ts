@@ -1,7 +1,7 @@
 /**
  * ledger-fortress TypeScript SDK.
  *
- * Atomic credit settlement for async AI workloads.
+ * Atomic Stripe + Supabase credit ledger for async AI workloads.
  * Wraps the PostgreSQL functions with a type-safe interface.
  *
  * Copyright 2026 BabySea, Inc.
@@ -34,23 +34,6 @@ export interface ChargeInput {
   model?: string;
 }
 
-export type ChargeStatus =
-  | 'charged'
-  | 'duplicate'
-  | 'missing_reserve'
-  | 'missing_account'
-  | 'already_settled'
-  | 'shortfall';
-
-export interface ChargeResult {
-  /** Structured status from `charge_credits_detailed()`. */
-  status: ChargeStatus;
-  /** True only when the charge fully settled with no shortfall. */
-  charged: boolean;
-  /** Shortfall recorded as `uncollectible` for `status === 'shortfall'`. */
-  uncollectible: number;
-}
-
 export interface RefundInput {
   accountId: string;
   generationId: string;
@@ -65,14 +48,7 @@ export interface AddCreditsInput {
   idempotencyKey?: string;
 }
 
-export type CreditEventType =
-  | 'reserve'
-  | 'charge'
-  | 'refund'
-  | 'add'
-  | 'clawback'
-  | 'trueup'
-  | 'uncollectible';
+export type CreditEventType = 'reserve' | 'charge' | 'refund' | 'add';
 
 export interface LedgerEntry {
   id: string;
@@ -127,31 +103,6 @@ export interface CreditEvent {
   model: string | null;
   description: string | null;
   occurred_at: string;
-}
-
-export interface ClawbackInput {
-  accountId: string;
-  amount: number;
-  /** e.g. "refund:{stripe_refund_id}" or "dispute:{stripe_dispute_id}" */
-  idempotencyKey: string;
-  reason?: 'stripe_refund' | 'stripe_dispute' | 'manual' | string;
-}
-
-export interface ClawbackResult {
-  /** True if a new clawback was applied; false for duplicate idempotency keys. */
-  applied: boolean;
-  /** Amount that could not be deducted because balance was insufficient. */
-  uncollectible: number;
-}
-
-export interface SettleInput {
-  accountId: string;
-  generationId: string;
-  /** The amount that was originally reserved. */
-  reservedAmount: number;
-  /** The actual cost that the model returned. May be lower or higher than reserved. */
-  actualAmount: number;
-  model?: string;
 }
 
 function assertCreditAmount(
@@ -271,38 +222,23 @@ export class LedgerFortress {
 
   /**
    * Confirm a reservation after successful generation.
-   * Log-only: no balance change (credits were already deducted at reserve time).
+    * Usually log-only: credits were already deducted at reserve time.
+    * If a prior refund exists, the SQL function re-deducts the reserved amount first.
    *
    * Idempotent: second call for the same generation_id is a no-op.
    */
   async charge(input: ChargeInput): Promise<boolean> {
-    const result = await this.chargeDetailed(input);
-    return result.charged;
-  }
-
-  /**
-   * Confirm a reservation and return structured status.
-   * Use this when the application needs to distinguish duplicate/no-op from
-   * a late charge shortfall that was recorded as `uncollectible`.
-   */
-  async chargeDetailed(input: ChargeInput): Promise<ChargeResult> {
     assertCreditAmount(input.amount);
-    const result = await this.pool.query<{
-      status: ChargeStatus;
-      uncollectible: string;
-    }>('SELECT * FROM charge_credits_detailed($1, $2, $3, $4)', [
-      input.accountId,
-      input.amount,
-      input.generationId,
-      input.model ?? null,
-    ]);
-    const row = result.rows[0];
-    const status = row?.status ?? 'duplicate';
-    return {
-      status,
-      charged: status === 'charged',
-      uncollectible: parseFloat(row?.uncollectible ?? '0'),
-    };
+    const result = await this.pool.query<{ charge_credits: boolean }>(
+      'SELECT charge_credits($1, $2, $3, $4) AS charge_credits',
+      [
+        input.accountId,
+        input.amount,
+        input.generationId,
+        input.model ?? null,
+      ],
+    );
+    return result.rows[0]?.charge_credits ?? false;
   }
 
   /**
@@ -310,7 +246,6 @@ export class LedgerFortress {
    *
    * Guards:
    * - If already charged ➜ no-op (prevents free output)
-   * - If already settled via true-up ➜ no-op
    * - If already refunded ➜ no-op (prevents double-refund)
    *
    * Idempotent: safe to call from webhooks, crash recovery, and cancel endpoints.
@@ -342,85 +277,6 @@ export class LedgerFortress {
       ],
     );
     return result.rows[0]?.add_credits ?? false;
-  }
-
-  /**
-   * Clawback credits from a Stripe refund or dispute.
-   *
-   * Deducts from balance up to the available amount; any shortfall is recorded
-   * as 'uncollectible' for accounting (balance never goes negative).
-   *
-   * Idempotent via `idempotencyKey` (use `refund:{stripe_refund_id}` or
-   * `dispute:{stripe_dispute_id}`).
-   *
-   * Returns `{ applied, uncollectible }`. Inspect `uncollectible > 0` to flag
-   * accounts that owe money.
-   */
-  async clawback(input: ClawbackInput): Promise<ClawbackResult> {
-    assertCreditAmount(input.amount);
-    if (!input.idempotencyKey) {
-      throw new Error('ledger-fortress: idempotencyKey is required');
-    }
-    const result = await this.pool.query<{
-      applied: boolean;
-      uncollectible: string;
-    }>('SELECT * FROM clawback_credits($1, $2, $3, $4)', [
-      input.accountId,
-      input.amount,
-      input.idempotencyKey,
-      input.reason ?? 'stripe_refund',
-    ]);
-    const row = result.rows[0];
-    return {
-      applied: row?.applied ?? false,
-      uncollectible: parseFloat(row?.uncollectible ?? '0'),
-    };
-  }
-
-  /**
-   * Variable-cost settlement for generative media: reserve maximum estimate,
-   * settle with the actual cost.
-   *
-   * Three cases handled atomically:
-   * - actual === reserved: log only (equivalent to charge)
-   * - actual <  reserved: refund the difference (true-down)
-   * - actual >  reserved: re-deduct the difference (true-up). If insufficient
-   *                       balance, an `uncollectible` entry is recorded.
-   *
-   * Idempotent per `generationId`. Mutually exclusive with `charge()` for the
-   * same generation.
-   */
-  async settle(input: SettleInput): Promise<boolean> {
-    assertCreditAmount(input.reservedAmount, 'reservedAmount');
-    assertCreditAmount(input.actualAmount, 'actualAmount', { allowZero: true });
-    if (!input.generationId) {
-      throw new Error('ledger-fortress: generationId is required');
-    }
-    const result = await this.pool.query<{ settle_credits: boolean }>(
-      'SELECT settle_credits($1, $2, $3, $4, $5) AS settle_credits',
-      [
-        input.accountId,
-        input.generationId,
-        input.reservedAmount,
-        input.actualAmount,
-        input.model ?? null,
-      ],
-    );
-    return result.rows[0]?.settle_credits ?? false;
-  }
-
-  /**
-   * Total uncollectible amount for an account (clawback + true-up shortfalls).
-   *
-   * Use this to flag accounts that owe money and should be blocked from
-   * further generations or sent to collections.
-   */
-  async getUncollectibleTotal(accountId: string): Promise<number> {
-    const result = await this.pool.query<{ get_uncollectible_total: string }>(
-      'SELECT get_uncollectible_total($1) AS get_uncollectible_total',
-      [accountId],
-    );
-    return parseFloat(result.rows[0]?.get_uncollectible_total ?? '0');
   }
 
   /**

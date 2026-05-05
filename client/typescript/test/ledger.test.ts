@@ -133,7 +133,7 @@ describe('LedgerFortress', () => {
   describe('charge', () => {
     it('confirms a reservation', async () => {
       mockPool.query.mockResolvedValueOnce({
-        rows: [{ status: 'charged', uncollectible: '0' }],
+        rows: [{ charge_credits: true }],
       });
       const result = await fortress.charge({
         accountId: 'acct_123',
@@ -143,14 +143,14 @@ describe('LedgerFortress', () => {
       });
       expect(result).toBe(true);
       expect(mockPool.query).toHaveBeenCalledWith(
-        'SELECT * FROM charge_credits_detailed($1, $2, $3, $4)',
+        'SELECT charge_credits($1, $2, $3, $4) AS charge_credits',
         ['acct_123', 0.062, 'gen_abc', 'flux-schnell'],
       );
     });
 
     it('returns false for duplicate charge (idempotent)', async () => {
       mockPool.query.mockResolvedValueOnce({
-        rows: [{ status: 'duplicate', uncollectible: '0' }],
+        rows: [{ charge_credits: false }],
       });
       const result = await fortress.charge({
         accountId: 'acct_123',
@@ -158,24 +158,6 @@ describe('LedgerFortress', () => {
         amount: 0.062,
       });
       expect(result).toBe(false);
-    });
-
-    it('returns structured shortfall status for late charge debt', async () => {
-      mockPool.query.mockResolvedValueOnce({
-        rows: [{ status: 'shortfall', uncollectible: '0.300' }],
-      });
-
-      const result = await fortress.chargeDetailed({
-        accountId: 'acct_123',
-        generationId: 'gen_late',
-        amount: 0.5,
-      });
-
-      expect(result).toEqual({
-        status: 'shortfall',
-        charged: false,
-        uncollectible: 0.3,
-      });
     });
   });
 
@@ -226,40 +208,6 @@ describe('LedgerFortress', () => {
         idempotencyKey: 'invoice:inv_xxx',
       });
       expect(result).toBe(false);
-    });
-  });
-
-  describe('clawback', () => {
-    it('returns applied and uncollectible amount', async () => {
-      mockPool.query.mockResolvedValueOnce({
-        rows: [{ applied: true, uncollectible: '38.000' }],
-      });
-
-      const result = await fortress.clawback({
-        accountId: 'acct_123',
-        amount: 50,
-        idempotencyKey: 'refund:re_123',
-      });
-
-      expect(result).toEqual({ applied: true, uncollectible: 38 });
-      expect(mockPool.query).toHaveBeenCalledWith(
-        'SELECT * FROM clawback_credits($1, $2, $3, $4)',
-        ['acct_123', 50, 'refund:re_123', 'stripe_refund'],
-      );
-    });
-
-    it('returns applied false for duplicate clawback events', async () => {
-      mockPool.query.mockResolvedValueOnce({
-        rows: [{ applied: false, uncollectible: '0' }],
-      });
-
-      const result = await fortress.clawback({
-        accountId: 'acct_123',
-        amount: 50,
-        idempotencyKey: 'refund:re_123',
-      });
-
-      expect(result).toEqual({ applied: false, uncollectible: 0 });
     });
   });
 

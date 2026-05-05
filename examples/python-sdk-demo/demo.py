@@ -7,6 +7,7 @@ reserve ➜ async generation ➜ charge (success) or refund (failure).
 Prerequisites:
     psql "$DATABASE_URL" < ../../migrations/001_credits.sql
     psql "$DATABASE_URL" < ../../migrations/002_credit_alerts.sql
+    psql "$DATABASE_URL" < ../../migrations/003_security.sql
 
 Run:
     DATABASE_URL=postgresql://... python demo.py
@@ -74,9 +75,9 @@ def main() -> None:
     print(f"  generation result: {'SUCCESS' if success else 'FAILED'}")
 
     # -------------------------------------------------------------------------
-    # 4. Settle
+    # 4. Complete: charge on success, refund on failure
     # -------------------------------------------------------------------------
-    print("\n--- Step 4: Settle ---")
+    print("\n--- Step 4: Complete ---")
     if success:
         charged = fortress.charge(
             account_id=account_id,

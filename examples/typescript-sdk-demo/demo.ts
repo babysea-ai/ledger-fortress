@@ -7,6 +7,7 @@
  * Prerequisites:
  *   psql "$DATABASE_URL" < ../../migrations/001_credits.sql
  *   psql "$DATABASE_URL" < ../../migrations/002_credit_alerts.sql
+ *   psql "$DATABASE_URL" < ../../migrations/003_security.sql
  *
  * Run:
  *   DATABASE_URL=postgresql://... npx tsx demo.ts
@@ -70,9 +71,9 @@ async function main() {
   console.log(`  generation result: ${success ? 'SUCCESS' : 'FAILED'}`);
 
   // -------------------------------------------------------------------------
-  // 4. Settle: charge on success, refund on failure
+  // 4. Complete: charge on success, refund on failure
   // -------------------------------------------------------------------------
-  console.log('\n--- Step 4: Settle ---');
+  console.log('\n--- Step 4: Complete ---');
   if (success) {
     const charged = await fortress.charge({
       accountId,

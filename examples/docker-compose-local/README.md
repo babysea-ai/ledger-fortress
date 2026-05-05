@@ -10,7 +10,7 @@ docker compose up -d
 
 This gives you:
 
-- **PostgreSQL** on `localhost:5432` with all four migrations applied
+- **PostgreSQL** on `localhost:5432` with all three supported migrations applied
 - **DATABASE_URL**: `postgresql://fortress:fortress@localhost:5432/fortress`
 
 ## Run the demo

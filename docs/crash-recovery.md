@@ -17,13 +17,13 @@ Time    Your App                    Provider                 Ledger
         about this generation)
 ```
 
-The reservation is in the ledger. Nobody will ever charge, refund, or settle it. The user's $0.062 is locked forever.
+The reservation is in the ledger. Nobody will ever charge or refund it. The user's $0.062 is locked forever.
 
 Multiply this by hundreds of generations per day, and you have a slow leak that erodes user trust.
 
 ## The solution
 
-`find_orphaned_reservations` is a Supabase SQL function that finds reservations with no matching settlement:
+`find_orphaned_reservations` is a Supabase SQL function that finds reservations with no matching terminal event:
 
 ```sql
 SELECT * FROM find_orphaned_reservations(
@@ -37,7 +37,7 @@ It returns reservations where:
 - `type = 'reserve'`
 - `generation_id IS NOT NULL`
 - `created_at < NOW() - 5 minutes`
-- No row exists with the same `generation_id` and `type IN ('charge', 'refund', 'trueup')`
+- No row exists with the same `generation_id` and `type IN ('charge', 'refund')`
 
 ## Why 5 minutes?
 
@@ -53,11 +53,10 @@ A 5-minute window covers most workloads. For longer video models, increase to 10
 
 ## Idempotency safety
 
-Crash recovery calls `refund_credits()` for each orphan. This function has three guards:
+Crash recovery calls `refund_credits()` for each orphan. This function has two guards:
 
 1. **If already charged ➜ no-op.** If the provider's success webhook arrived while crash recovery was processing, the charge wins. No double-credit.
-2. **If already settled via true-up ➜ no-op.** If variable-cost settlement arrived while crash recovery was processing, settlement wins.
-3. **If already refunded ➜ no-op.** If the provider's failure webhook arrived, the refund already happened. No double-refund.
+2. **If already refunded ➜ no-op.** If the provider's failure webhook arrived, the refund already happened. No double-refund.
 
 This means crash recovery is safe to run at any frequency. It can overlap with webhooks. It can run twice for the same orphan. The guards ensure correctness.
 

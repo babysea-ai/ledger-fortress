@@ -40,7 +40,6 @@ MIGRATIONS = [
     ROOT / 'migrations' / '001_credits.sql',
     ROOT / 'migrations' / '002_credit_alerts.sql',
     ROOT / 'migrations' / '003_security.sql',
-    ROOT / 'migrations' / '004_clawback_and_trueup.sql',
 ]
 
 
@@ -246,7 +245,6 @@ def exercise_ledger(
 ) -> None:
     account_a = str(uuid.uuid4())
     account_b = str(uuid.uuid4())
-    account_c = str(uuid.uuid4())
 
     with conn.cursor() as cur:
         set_search_path(cur, schema_name)
@@ -284,49 +282,21 @@ def exercise_ledger(
             (account_a, Decimal('1.250'), gen_charge, 'smoke/model'),
         )
         expect(result, reserved is True, 'reserve_credits succeeds atomically')
-        cur.execute(
-            'SELECT status, uncollectible FROM charge_credits_detailed(%s, %s, %s, %s)',
+        charged = scalar(
+            cur,
+            'SELECT charge_credits(%s, %s, %s, %s)',
             (account_a, Decimal('1.250'), gen_charge, 'smoke/model'),
         )
-        row = cur.fetchone()
-        if row is None:
-            raise AssertionError('charge_credits_detailed returned no row')
-        status, uncollectible = row
-        expect(result, status == 'charged' and decimal_eq(uncollectible, '0.000'), 'charge_credits_detailed records charged terminal state')
+        expect(result, charged is True, 'charge_credits records successful terminal state')
 
-        # Late success after a refund, with no balance left, records a durable shortfall.
+        # Refund returns reserved credits exactly once.
         scalar(cur, 'SELECT add_credits(%s, %s, %s, %s)', (account_b, Decimal('5.000'), 'late grant', f'invoice:late:{run_id}'))
-        late_gen = f'gen_smoke_late_{run_id}'
-        scalar(cur, 'SELECT reserve_credits(%s, %s, %s, %s)', (account_b, Decimal('5.000'), late_gen, 'smoke/late'))
-        refunded = scalar(cur, 'SELECT refund_credits(%s, %s, %s, %s)', (account_b, Decimal('5.000'), late_gen, 'smoke/late'))
+        refund_gen = f'gen_smoke_refund_{run_id}'
+        scalar(cur, 'SELECT reserve_credits(%s, %s, %s, %s)', (account_b, Decimal('5.000'), refund_gen, 'smoke/refund'))
+        refunded = scalar(cur, 'SELECT refund_credits(%s, %s, %s, %s)', (account_b, Decimal('5.000'), refund_gen, 'smoke/refund'))
         expect(result, refunded is True, 'refund_credits returns reserved credits')
-        clawed = scalar(cur, 'SELECT applied FROM clawback_credits(%s, %s, %s, %s)', (account_b, Decimal('5.000'), f'refund:drain:{run_id}', 'stripe_refund'))
-        expect(result, clawed is True, 'clawback_credits can drain refunded balance')
-        cur.execute(
-            'SELECT status, uncollectible FROM charge_credits_detailed(%s, %s, %s, %s)',
-            (account_b, Decimal('5.000'), late_gen, 'smoke/late'),
-        )
-        row = cur.fetchone()
-        if row is None:
-            raise AssertionError('late charge_credits_detailed returned no row')
-        status, uncollectible = row
-        expect(result, status == 'shortfall' and decimal_eq(uncollectible, '5.000'), 'late charge after refund records uncollectible shortfall')
-
-        # Variable-cost settlement: true-down and true-up shortfall.
-        scalar(cur, 'SELECT add_credits(%s, %s, %s, %s)', (account_c, Decimal('2.000'), 'settle grant', f'invoice:settle:{run_id}'))
-        settle_down_gen = f'gen_smoke_settle_down_{run_id}'
-        scalar(cur, 'SELECT reserve_credits(%s, %s, %s, %s)', (account_c, Decimal('1.000'), settle_down_gen, 'smoke/settle'))
-        settled = scalar(cur, 'SELECT settle_credits(%s, %s, %s, %s, %s)', (account_c, settle_down_gen, Decimal('1.000'), Decimal('0.400'), 'smoke/settle'))
-        expect(result, settled is True, 'settle_credits true-down succeeds')
-        settle_balance = scalar(cur, 'SELECT get_balance(%s)', (account_c,))
-        expect(result, decimal_eq(settle_balance, '1.600'), 'true-down refunds unused reservation')
-
-        settle_up_gen = f'gen_smoke_settle_up_{run_id}'
-        scalar(cur, 'SELECT reserve_credits(%s, %s, %s, %s)', (account_c, Decimal('1.600'), settle_up_gen, 'smoke/settle'))
-        settled_shortfall = scalar(cur, 'SELECT settle_credits(%s, %s, %s, %s, %s)', (account_c, settle_up_gen, Decimal('1.600'), Decimal('2.000'), 'smoke/settle'))
-        expect(result, settled_shortfall is True, 'settle_credits true-up shortfall succeeds')
-        uncollectible_total = scalar(cur, 'SELECT get_uncollectible_total(%s)', (account_c,))
-        expect(result, decimal_eq(uncollectible_total, '0.400'), 'true-up shortfall is recorded as uncollectible')
+        duplicate_refund = scalar(cur, 'SELECT refund_credits(%s, %s, %s, %s)', (account_b, Decimal('5.000'), refund_gen, 'smoke/refund'))
+        expect(result, duplicate_refund is False, 'duplicate refund no-ops')
 
         scalar(cur, 'SELECT upsert_credit_alert_settings(%s, %s, %s, %s, %s, %s)', (account_a, True, [Decimal('38.000')], True, False, False))
         alerts = scalar(cur, 'SELECT COUNT(*) FROM check_credit_alerts(%s)', (account_a,))

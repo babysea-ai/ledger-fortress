@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://ledger-fortress.dev/schemas/credit-event.v1.json",
   "title": "CreditEvent",
-  "description": "One row per credit lifecycle event. Logged to the credit_ledger table on every balance or settlement event.",
+  "description": "One row per credit lifecycle event. Logged to the credit_ledger table on every BabySea-derived balance event.",
   "type": "object",
   "required": [
     "schema_version",
@@ -35,15 +35,12 @@
         "reserve",
         "charge",
         "refund",
-        "add",
-        "clawback",
-        "trueup",
-        "uncollectible"
+        "add"
       ]
     },
     "amount": {
       "type": "number",
-      "description": "Credit amount involved in this event. True-up events may be positive, negative, or zero. Clawback events may be zero when the balance was already exhausted. Other event types are positive."
+      "description": "Positive credit amount involved in this event."
     },
     "balance_after": {
       "type": "number",
@@ -52,7 +49,7 @@
     },
     "generation_id": {
       "type": ["string", "null"],
-      "description": "Links generation settlement events to a specific generation. Required for charge, refund, and true-up events. Optional for reserve."
+      "description": "Links generation terminal events to a specific generation. Required for charge and refund events. Optional for reserve."
     },
     "model": {
       "type": ["string", "null"],
@@ -72,22 +69,7 @@
     {
       "if": {
         "properties": {
-          "type": { "const": "clawback" }
-        },
-        "required": ["type"]
-      },
-      "then": {
-        "properties": {
-          "amount": { "minimum": 0 }
-        }
-      }
-    },
-    {
-      "if": {
-        "properties": {
-          "type": {
-            "enum": ["reserve", "charge", "refund", "add", "uncollectible"]
-          }
+          "type": { "enum": ["reserve", "charge", "refund", "add"] }
         },
         "required": ["type"]
       },
@@ -100,7 +82,7 @@
     {
       "if": {
         "properties": {
-          "type": { "enum": ["charge", "refund", "trueup"] }
+          "type": { "enum": ["charge", "refund"] }
         },
         "required": ["type"]
       },
@@ -114,7 +96,7 @@
     {
       "if": {
         "properties": {
-          "type": { "enum": ["add", "clawback"] }
+          "type": { "const": "add" }
         },
         "required": ["type"]
       },

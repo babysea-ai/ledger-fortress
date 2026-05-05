@@ -14,6 +14,21 @@ All notable changes to `ledger-fortress` will be documented here. The format fol
 ### Changed
 
 - Normalized the Apache 2.0 `LICENSE` wording to the canonical BabySea OSS format used across public packages.
+- Re-validated `ledger-fortress` against BabySea's production payment and credit implementation across Supabase schemas, the inference credit service, billing webhooks, generation cleanup, and team billing guards.
+- Narrowed the documented OSS contract to the BabySea-derived Stripe + Supabase lifecycle: `add_credits`, `reserve_credits`, `charge_credits`, `refund_credits`, low-balance alerts, crash recovery, and backend-only Supabase security boundaries.
+- Updated README, architecture, provenance, Stripe integration, crash recovery, edge-case, SDK, example, smoke-test, and JSON schema docs to define Stripe and Supabase as the supported stack.
+- Updated TypeScript and Python SDKs/tests so the public API only exposes supported reserve, charge, refund, add, alert, ledger-listing, plan-credit, and orphan-recovery helpers.
+- Updated Docker Compose and real-stack smoke validation to apply only the three supported migrations.
+
+### Removed
+
+- Removed previously documented advanced ledger flows that are not implemented in BabySea production: variable-cost terminal reconciliation, credit clawbacks, debt/shortfall ledger entries, detailed charge-status APIs, and automatic Stripe refund/dispute credit deductions.
+- Deleted the unsupported fourth advanced migration and removed all SDK methods, tests, schemas, examples, and docs that depended on it.
+
+### Validated
+
+- Confirmed BabySea production uses additive Stripe invoice/checkout credit grants, pre-generation reserve, success charge confirmation, failure/cancel/cleanup refund, low-balance alerts, and scheduled stale-generation cleanup.
+- Confirmed BabySea production does not implement the removed advanced refund/dispute or debt-tracking flows, so they are intentionally outside this OSS surface.
 
 ## [0.1.2] - 2026-05-02
 
@@ -35,25 +50,24 @@ All notable changes to `ledger-fortress` will be documented here. The format fol
 
 ### Validated
 
-- Re-grounded the OSS scope against BabySea production credit files: `21-credits.sql`, `34-credit-alerts.sql`, the inference-hub credit service, the Stripe billing webhook route, and the team billing checkout guard.
+- Re-grounded the OSS scope against BabySea's internal production credit implementation: credit schema, credit alert schema, the credit service module, the Stripe billing webhook handler, and the team billing checkout guard.
 - Confirmed the real-stack smoke harness refuses live Stripe keys, drops its disposable Supabase schema by default, and only creates a disposable Stripe test customer.
 
 ## [0.1.1] - 2026-05-02
 
 ### Added
 
-- `get_plan_credits()` SQL boundary plus TypeScript/Python SDK helpers for Stripe Price ID credit lookup.
-- `charge_credits_detailed()` plus TypeScript/Python SDK helpers for distinguishing charged, duplicate/no-op, missing-reserve, already-settled, and shortfall outcomes.
+- `get_plan_credits()` TypeScript/Python SDK helpers for Stripe Price ID credit lookup.
 
 ### Changed
 
-- Late success callbacks after refund now record durable `uncollectible` shortfalls when the account cannot fully recollect the reserved amount, and expose `status = 'shortfall'` through detailed charge APIs.
+- Late success callbacks after refund now attempt to re-deduct the reserved amount atomically before logging success; if the balance cannot cover it, `charge_credits` returns `FALSE` for application review.
 - Stripe custom credit resolvers run even when Stripe reports a zero amount, supporting fixed-credit plans, discounts, trials, and enterprise contracts.
 - Ledger amount inputs are rejected when they exceed the supported three-decimal scale or `NUMERIC(10,3)` range instead of being silently rounded or surfacing database overflow errors.
 
 ### Validated
 
-- TypeScript typecheck, tests, and build; Python syntax/metadata checks; PostgreSQL 16 migration load; and focused local SQL assertions for reservation idempotency, detailed charge shortfalls, clawbacks, true-ups, orphan recovery, plan lookup, and amount validation.
+- TypeScript typecheck, tests, and build; Python syntax/metadata checks; PostgreSQL 16 migration load; and focused local SQL assertions for reservation idempotency, orphan recovery, plan lookup, and amount validation.
 
 ### Removed
 
@@ -65,13 +79,13 @@ Initial public release.
 
 ### Added
 
-- Four PostgreSQL migrations for core ledger tables, low-balance alerts, RLS hardening, and true-up/clawback support.
-- Seventeen public SQL functions: `reserve_credits`, `charge_credits`, `charge_credits_detailed`, `refund_credits`, `add_credits`, `settle_credits`, `clawback_credits`, `has_credits`, `get_balance`, `get_plan_credits`, `get_uncollectible_total`, `list_credit_ledger`, `find_orphaned_reservations`, `check_credit_alerts`, `reset_credit_alerts`, `get_credit_alert_settings`, and `upsert_credit_alert_settings`.
-- Idempotency guarantees via unique partial indexes on the ledger (exactly-once add, charge, refund, clawback, and settle paths).
+- Three PostgreSQL migrations for core ledger tables, low-balance alerts, and RLS hardening.
+- Thirteen public SQL functions: `reserve_credits`, `charge_credits`, `refund_credits`, `add_credits`, `has_credits`, `get_balance`, `get_plan_credits`, `list_credit_ledger`, `find_orphaned_reservations`, `check_credit_alerts`, `reset_credit_alerts`, `get_credit_alert_settings`, and `upsert_credit_alert_settings`.
+- Idempotency guarantees via unique partial indexes on the ledger for exactly-once add, charge, refund, and reserve paths.
 - Credit alert state machine: `credit_alert_settings`, `credit_alert_log`, `check_credit_alerts`, and `reset_credit_alerts`.
-- TypeScript SDK (`LedgerFortress`) with reserve, charge, refund, add, settle, clawback, alert management, and crash recovery helpers.
-- TypeScript Stripe webhook handlers for `invoice.paid`, `checkout.session.completed`, `charge.refunded`, and `charge.dispute.created` reconciliation.
-- Python SDK (`LedgerFortress`) for the reserve/charge/refund/add/settle/clawback/crash-recovery lifecycle.
+- TypeScript SDK (`LedgerFortress`) with reserve, charge, refund, add, alert management, and crash recovery helpers.
+- TypeScript Stripe webhook handlers for `invoice.paid`, `checkout.session.completed`, and `checkout.session.async_payment_succeeded` credit grants.
+- Python SDK (`LedgerFortress`) for the reserve/charge/refund/add/crash-recovery lifecycle.
 - JSON Schemas: `credit-event.v1.json`, `credit-alert.v1.json`.
 - Docker Compose local stack (PostgreSQL with auto-applied migrations).
 - TypeScript and Python SDK demo scripts with full lifecycle walkthrough.
@@ -80,8 +94,7 @@ Initial public release.
 
 ### Validated
 
-- Reserve ➜ charge ➜ refund lifecycle across all six documented edge cases.
-- Variable-cost true-up via `settle_credits`, including uncollectible shortfall handling.
-- Idempotent Stripe webhook handling across invoice retries, refunds, and disputes.
+- Reserve ➜ charge ➜ refund lifecycle across the documented edge cases.
+- Idempotent Stripe webhook handling across invoice and checkout retries.
 - Crash recovery on orphaned reservations older than a configurable window.
 - Credit alert state machine fires exactly once per threshold descent.

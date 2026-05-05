@@ -30,6 +30,16 @@ Stripe                      ledger-fortress             Your App
 
 ## Setup
 
+### Stripe event and key scope
+
+Configure a Stripe webhook endpoint for only the credit-grant events this package handles:
+
+- `invoice.paid`
+- `checkout.session.completed`
+- `checkout.session.async_payment_succeeded` when you support asynchronous payment methods
+
+Use `STRIPE_WEBHOOK_SECRET` for signature verification. The webhook helper does not need a broad Stripe API key to mutate credits; your application only needs a Stripe secret key if it also calls Stripe APIs such as creating checkout sessions or retrieving expanded objects. Keep that key restricted to those application-owned operations.
+
 ### 1. Configure your plans
 
 Map your Stripe Price IDs to credit allocations:
@@ -66,13 +76,6 @@ const handler = createStripeWebhookHandler({
       where: { stripeCustomerId: customerId },
     });
     return account?.id ?? null;
-  },
-  // Optional: useful when charge.dispute.created carries an unexpanded charge ID.
-  resolveChargeAccountId: async (chargeId) => {
-    const payment = await db.payments.findFirst({
-      where: { stripeChargeId: chargeId },
-    });
-    return payment?.accountId ?? null;
   },
   // Optional: use get_plan_credits()/plans.tokens instead of amount_paid/100.
   resolveInvoiceCredits: async (invoice) => {
@@ -113,7 +116,7 @@ export async function POST(request: Request) {
 
 ### 3. Handle the events
 
-The webhook handler processes four Stripe events. In production, pass only events that were verified with Stripe's raw-body signature verification.
+The webhook handler processes BabySea-derived credit-grant events. In production, pass only events that were verified with Stripe's raw-body signature verification.
 
 #### `invoice.paid`
 
@@ -138,23 +141,7 @@ Triggered when a customer completes a one-time purchase (credit pack). The handl
 
 For asynchronous payment methods, also subscribe to `checkout.session.async_payment_succeeded`; it runs through the same paid checkout handler.
 
-#### `charge.refunded`
-
-Triggered when Stripe records a full or partial refund. The handler:
-
-1. Reads the latest refund object from the charge payload
-2. Converts the individual refund amount to credits
-3. Calls `clawback_credits()` with idempotency key `refund:{refundId}`
-4. Returns `skipped_duplicate` when the same refund was already processed
-
-#### `charge.dispute.created`
-
-Triggered when a customer disputes a charge. The handler:
-
-1. Maps the expanded charge customer to an account, or uses `resolveChargeAccountId` for unexpanded charge IDs
-2. Converts the disputed amount to credits
-3. Calls `clawback_credits()` with idempotency key `dispute:{disputeId}`
-4. Records any balance shortfall as `uncollectible` instead of letting the balance go negative
+Stripe `charge.refunded` and `charge.dispute.created` credit deductions are intentionally not implemented here because BabySea's current production credit ledger does not include automatic refund/dispute credit deductions. Handle customer refunds, dispute evidence, and compliance workflows in your billing system outside this package.
 
 ### 4. Idempotency guarantees
 
@@ -164,10 +151,8 @@ Every `add_credits` call uses a unique idempotency key derived from the Stripe o
 |---|---|
 | `invoice.paid` | `invoice:inv_xxx` |
 | `checkout.session.completed` | `order:pi_xxx` |
-| `charge.refunded` | `refund:re_xxx` |
-| `charge.dispute.created` | `dispute:dp_xxx` |
 
-The `idx_credit_ledger_add_idempotent` and `idx_credit_ledger_clawback_idempotent` unique partial indexes ensure that even if Stripe retries the webhook 10 times, credits are granted or clawed back exactly once.
+The `idx_credit_ledger_add_idempotent` unique partial index ensures that even if Stripe retries the webhook 10 times, credits are granted exactly once.
 
 ## Credit pack purchase guard
 

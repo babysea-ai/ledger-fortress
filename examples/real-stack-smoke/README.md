@@ -7,7 +7,7 @@ It is intentionally narrower than the destructive E2E simulation in `client/type
 - Creates one disposable Stripe test customer and deletes it in cleanup.
 - Creates one disposable Supabase schema named `ledger_fortress_smoke_<run_id>`.
 - Applies the OSS migrations inside that disposable schema with the function `search_path` locked to that schema.
-- Exercises additive Stripe-style grants, reserve, charge, refund, late-charge shortfall, true-up, clawback, alerts, and RLS/grant posture.
+- Exercises additive Stripe-style grants, reserve, charge, refund, duplicate-event idempotency, alerts, and RLS/grant posture.
 - Drops the disposable schema by default.
 
 ## Required environment
@@ -50,5 +50,5 @@ The script prints only sanitized identifiers and never prints secret values.
 - `SECURITY DEFINER` functions keep a locked, schema-specific `search_path`.
 - Supabase roles have RLS enabled and no client table grants by default.
 - Stripe API authentication works with a restricted test key.
-- Stripe-style idempotency keys (`invoice:*`, `order:*`, `refund:*`, `dispute:*`) are enforced by the ledger.
-- The balance never goes negative; shortfalls are recorded as `uncollectible`.
+- Stripe-style grant idempotency keys (`invoice:*`, `order:*`) are enforced by the ledger.
+- The balance never goes negative; Stripe refund/dispute credit deductions are intentionally outside this BabySea-derived OSS surface.

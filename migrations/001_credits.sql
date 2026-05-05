@@ -1,6 +1,6 @@
 -- ledger-fortress: 001_credits.sql
 --
--- Atomic credit settlement for async AI workloads.
+-- Atomic Stripe + Supabase credit ledger for async AI workloads.
 -- Apply with: psql "$DATABASE_URL" < migrations/001_credits.sql
 --
 -- Copyright 2026 BabySea, Inc.
@@ -62,7 +62,7 @@ CREATE TABLE IF NOT EXISTS credit_ledger (
                     CHECK (type IN ('reserve', 'charge', 'refund', 'add')),
   amount          NUMERIC(10, 3) NOT NULL CHECK (amount > 0),
   balance_after   NUMERIC(10, 3) NOT NULL,
-  generation_id   TEXT,                         -- links generation settlement events to a generation
+  generation_id   TEXT,                         -- links generation terminal events to a generation
   model           TEXT,                         -- model identifier for audit
   description     TEXT,                         -- human-readable note
   created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -93,7 +93,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_credit_ledger_add_idempotent
 CREATE UNIQUE INDEX IF NOT EXISTS idx_credit_ledger_reserve_idempotent
   ON credit_ledger (generation_id) WHERE type = 'reserve' AND generation_id IS NOT NULL;
 
--- Fast lookup for crash recovery: find reservations without a matching terminal settlement.
+-- Fast lookup for crash recovery: find reservations without a matching terminal event.
 CREATE INDEX IF NOT EXISTS idx_credit_ledger_reserve_pending
   ON credit_ledger (generation_id, created_at) WHERE type = 'reserve';
 
@@ -269,7 +269,8 @@ COMMENT ON FUNCTION reserve_credits IS 'Atomically deduct credits. Returns FALSE
 -- FUNCTION: charge_credits(account_id, tokens, generation_id, model)
 --
 -- Confirms a reservation after successful generation.
--- Log-only: NO balance change (credits were already deducted at reserve time).
+-- Usually log-only because credits were already deducted at reserve time.
+-- If a prior refund exists, the function re-deducts the reserved amount first.
 --
 -- Idempotent: second call for the same generation_id is a no-op.
 -- ============================================================================
@@ -322,14 +323,6 @@ BEGIN
     RETURN FALSE;  -- idempotent no-op
   END IF;
 
-  -- Variable-cost settlement is terminal. Do not add a fixed charge after it.
-  IF EXISTS (
-    SELECT 1 FROM credit_ledger
-    WHERE generation_id = p_generation_id AND type = 'trueup'
-  ) THEN
-    RETURN FALSE;
-  END IF;
-
   -- Check if this generation was already refunded (out-of-order webhooks).
   -- If so, we must re-deduct the balance since refund returned the credits.
   v_already_refunded := EXISTS (
@@ -349,7 +342,7 @@ BEGIN
     IF NOT FOUND THEN
       -- Insufficient balance to re-deduct after a prior refund. Do not mark
       -- the generation charged; the application can retry, pause the account,
-      -- or settle via an explicit uncollectible flow.
+      -- or route the case to manual review.
       RETURN FALSE;
     END IF;
   ELSE
@@ -374,17 +367,16 @@ BEGIN
 END;
 $$;
 
-COMMENT ON FUNCTION charge_credits IS 'Confirm a reservation (log-only). Idempotent via unique index.';
+COMMENT ON FUNCTION charge_credits IS 'Confirm a reservation. Re-deducts only when correcting a prior refund. Idempotent via unique index.';
 
 -- ============================================================================
 -- FUNCTION: refund_credits(account_id, tokens, generation_id, model)
 --
 -- Returns reserved credits to the account after a failed or cancelled generation.
 --
--- Three guards:
+-- Two guards:
 --   1. If already charged ➜ do NOT refund (prevents: reserve ➜ charge ➜ crash ➜ refund ➜ free output)
---   2. If already settled via true-up ➜ do NOT refund
---   3. If already refunded ➜ no-op
+--   2. If already refunded ➜ no-op
 --
 -- Idempotent: safe to call from webhooks, crash recovery, and cancel endpoints.
 -- ============================================================================
@@ -437,15 +429,7 @@ BEGIN
     RETURN FALSE;
   END IF;
 
-  -- Guard 2: If already settled via variable-cost true-up, do NOT refund.
-  IF EXISTS (
-    SELECT 1 FROM credit_ledger
-    WHERE generation_id = p_generation_id AND type = 'trueup'
-  ) THEN
-    RETURN FALSE;
-  END IF;
-
-  -- Guard 3: If already refunded, no-op.
+  -- Guard 2: If already refunded, no-op.
   IF EXISTS (
     SELECT 1 FROM credit_ledger
     WHERE generation_id = p_generation_id AND type = 'refund'
@@ -659,7 +643,7 @@ COMMENT ON FUNCTION get_plan_credits IS 'Returns credits configured for a Stripe
 -- FUNCTION: find_orphaned_reservations(window_minutes, lim)
 --
 -- Used by crash recovery. Finds reservations older than `window_minutes`
--- that have no matching charge, refund, or true-up settlement.
+-- that have no matching charge or refund terminal event.
 -- ============================================================================
 
 CREATE OR REPLACE FUNCTION find_orphaned_reservations(
@@ -693,11 +677,11 @@ BEGIN
     AND NOT EXISTS (
       SELECT 1 FROM credit_ledger cl2
       WHERE cl2.generation_id = cl.generation_id
-        AND cl2.type IN ('charge', 'refund', 'trueup')
+        AND cl2.type IN ('charge', 'refund')
     )
   ORDER BY cl.created_at ASC
   LIMIT p_limit;
 END;
 $$;
 
-COMMENT ON FUNCTION find_orphaned_reservations IS 'Finds reservations with no settlement, older than the given window.';
+COMMENT ON FUNCTION find_orphaned_reservations IS 'Finds reservations with no charge or refund terminal event, older than the given window.';
