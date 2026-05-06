@@ -27,6 +27,15 @@ export SUPABASE_POOLER_HOST="aws-1-us-east-1.pooler.supabase.com" # optional def
 export SUPABASE_POOLER_PORT="5432"                                # optional session-pooler default
 ```
 
+If direct Supabase database access resolves to an IPv6-only host from your CI or
+dev container, set the Supavisor connection explicitly:
+
+```bash
+export SUPABASE_DB_HOST="aws-1-us-east-1.pooler.supabase.com"
+export SUPABASE_DB_PORT="6543"
+export SUPABASE_DB_USER="postgres.<project-ref>"
+```
+
 Optional:
 
 ```bash
@@ -43,6 +52,20 @@ python -m venv /tmp/ledger-fortress-smoke-venv
 ```
 
 The script prints only sanitized identifiers and never prints secret values.
+
+## Post-migration security checks
+
+After applying the migrations to a real deployment, run the verification scripts
+from the repository root:
+
+```bash
+DATABASE_URL="postgresql://..." ./scripts/verify-rls.sh
+DATABASE_URL="postgresql://..." ./scripts/verify-functions.sh
+DATABASE_URL="postgresql://..." ./scripts/verify-anon-denied.sh
+```
+
+These checks verify RLS is enabled, fortress functions are hardened, and
+Supabase client roles cannot read/write ledger tables or execute fortress RPCs.
 
 ## What it proves
 

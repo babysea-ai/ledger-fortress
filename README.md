@@ -2,7 +2,7 @@
 
 # 🏰 ledger-fortress
 
-**Atomic Stripe + Supabase credit ledger for async AI workloads.<br/>
+**Atomic credit settlement engine for async inference workloads.<br/>
 Built on Stripe and Supabase.**
 
 <br/>
@@ -10,7 +10,7 @@ Built on Stripe and Supabase.**
 [![Open Source](https://img.shields.io/badge/open%20source-BabySea-48d1cc.svg)](https://babysea.ai)
 [![BabySea OSS Primitives](https://img.shields.io/badge/oss%20primitives-BabySea-ea580c.svg)](#babysea-oss-taxonomy)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/status-alpha-orange.svg)](#status)
+[![Status](https://img.shields.io/badge/status-working-2ea44f.svg)](#status)
 [![Sentry](https://img.shields.io/badge/Sentry-code%20guard-362D59.svg?logo=sentry&logoColor=white)](https://sentry.io)
 
 <br/>
@@ -45,9 +45,41 @@ BabySea open source projects are organized into three categories:
 
 ---
 
+## BabySea OSS architecture
+
+```text
+Application developers
+  │
+  ▼
+babysea SDK
+  │
+  ▼
+BabySea execution control plane
+  ├─ rosetta-bridge     request normalization
+  ├─ adaptive-island    provider ranking
+  └─ ledger-fortress    credit settlement
+```
+
+`ledger-fortress` owns the credit-lifecycle invariant: reserve before dispatch,
+charge on success, refund on failure/cancel/crash recovery, and make duplicate
+events safe at the database boundary.
+
+---
+
 ## What this is
 
 `ledger-fortress` is an open-source credit ledger inspired by the core invariants used in [BabySea](https://babysea.ai)'s production credit system: atomic reserve ➜ charge ➜ refund, additive Stripe grants, database-enforced idempotency, low-balance alert state, and crash recovery for async AI generations. The OSS package packages that pattern for teams building on **Stripe + Supabase**.
+
+**30-second version:** AI generation billing is hard because work is async. You
+must reserve before dispatch, charge on success, refund on failure, survive
+duplicate webhooks, and recover crashed jobs. `ledger-fortress` packages that
+lifecycle with Stripe + Supabase/Postgres.
+
+**Deliberate boundary:** `ledger-fortress` grants credits from paid Stripe
+invoice and checkout events. It does not automatically claw back credits for
+Stripe refunds, disputes, chargebacks, uncollectible invoices, or support-driven
+adjustments. Keep those payment workflows in your billing/support system unless
+you implement and validate an explicit extension.
 
 For the exact split between BabySea-mirrored behavior and OSS-generalized extensions, see [`docs/babysea-provenance.md`](docs/babysea-provenance.md).
 
@@ -162,6 +194,22 @@ SUPABASE_DB_PASSWORD="..." \
 ```
 
 See [`examples/real-stack-smoke/`](examples/real-stack-smoke/) for the required environment and cleanup behavior.
+
+### Option 1c. Verify deployment security posture
+
+After applying all three migrations to a real deployment, verify RLS, hardened
+functions, and client-role denial:
+
+```bash
+DATABASE_URL="postgresql://..." ./scripts/verify-rls.sh
+DATABASE_URL="postgresql://..." ./scripts/verify-functions.sh
+DATABASE_URL="postgresql://..." ./scripts/verify-anon-denied.sh
+```
+
+If your runner cannot reach `db.<project-ref>.supabase.co` because it resolves
+to IPv6 only, use the Supavisor pooler with `SUPABASE_DB_HOST`,
+`SUPABASE_DB_PORT=6543`, and `SUPABASE_DB_USER=postgres.<project-ref>` when
+building the database URL.
 
 ### Option 2. Use the TypeScript SDK
 
@@ -394,6 +442,8 @@ By default, the Stripe helper grants credits from the amount Stripe reports as p
 
 BabySea's current credit implementation does not automatically deduct credits for Stripe `charge.refunded` or `charge.dispute.created` events, so `ledger-fortress` does not ship those flows. Handle payment refunds and disputes in Stripe/support workflows outside this package.
 
+For the full handled/skipped event matrix, see [`docs/stripe-event-matrix.md`](docs/stripe-event-matrix.md).
+
 ## Pricing boundary
 
 BabySea computes the model cost before `reserve_credits()` using model pricing, duration, resolution, and audio-mode inputs. `ledger-fortress` follows that approach: reserve the exact amount your application has accepted for the generation, then call `charge()` or `refund()` for the same amount.
@@ -476,9 +526,13 @@ Before going live with real Stripe payments:
 - [ ] Restrict your Stripe API key to the [permissions listed in `docs/stripe-integration.md`](docs/stripe-integration.md)
 - [ ] Keep Stripe refund/dispute handling outside `ledger-fortress`; this package only grants credits from paid invoices and checkout sessions
 
+For a proof-oriented map from invariants to SQL mechanisms, see [`docs/INVARIANTS.md`](docs/INVARIANTS.md).
+
 ## Status
 
-`ledger-fortress` is **alpha** (v0.1.2). The reserve ➜ charge ➜ refund core is inspired by [BabySea](https://babysea.ai)'s production stack serving 80+ AI models across 12+ labs. This repo packages and generalizes those credit ledger invariants for community Stripe + Supabase deployments. APIs may change before 1.0. See [`CHANGELOG.md`](CHANGELOG.md).
+`ledger-fortress` is a **working OSS primitive** (v0.1.2). The reserve ➜ charge ➜ refund core mirrors [BabySea](https://babysea.ai)'s production credit lifecycle approach for 80+ AI models across 12+ labs. This repo packages and generalizes those credit ledger invariants for community Stripe + Supabase deployments. See [`CHANGELOG.md`](CHANGELOG.md).
+
+The package is still v0.x, so SQL migration shape, SQL function signatures, SDK APIs, package publishing, and deployment verification flow can evolve before a 1.0 promise. That is separate from invariant confidence: the current v0.1 surface below is documented, tested, and real-stack smoke-validated.
 
 Both the TypeScript and Python SDKs build. The TypeScript SDK ships with tests. Neither is published to npm/PyPI yet for 0.1; install from source or pin to a commit SHA.
 
@@ -495,13 +549,15 @@ Both the TypeScript and Python SDKs build. The TypeScript SDK ships with tests. 
 
 ## Who's using it
 
-- 🌊 **[BabySea](https://babysea.ai)**: the execution control plane for generative media. 80+ image and video models from 12+ AI labs, using the reserve ➜ charge ➜ refund core pattern this project packages.
+- **[BabySea](https://babysea.ai)**: the execution control plane for generative media. 80+ image and video models from 12+ AI labs, using the reserve ➜ charge ➜ refund core pattern this project packages.
 
 *Using `ledger-fortress`? Open a PR to add yourself.*
 
 ## Related projects
 
-- 🏝️ **[adaptive-island](https://github.com/babysea-ai/adaptive-island)**: adaptive provider-selection engine for multi-vendor AI workloads, built on Databricks. Routes traffic to the right provider. `ledger-fortress` makes sure every generation is paid for.
+- 🌊 [BabySea SDK](https://github.com/babysea-ai/babysea): Production TypeScript SDK for the BabySea execution control plane for generative media. One API, one schema, one lifecycle across image and video inference providers.
+- 🏝️ [adaptive-island](https://github.com/babysea-ai/adaptive-island): Cache-first provider selection engine for multi-provider inference workloads. Built on Databricks, Supabase, and Upstash.
+- 🌉 [rosetta-bridge](https://github.com/babysea-ai/rosetta-bridge): Request normalization engine for multi-provider inference workloads. Built with JSON Schema and TypeScript adapters.
 
 ## Contributing
 

@@ -10,15 +10,27 @@ All notable changes to `ledger-fortress` will be documented here. The format fol
 
 - Added `BabySea OSS taxonomy` in `README.md`.
 - Fix table formatting in `README.md`.
+- Added shared BabySea OSS architecture framing, 30-second summary, deliberate Stripe refund/dispute boundary, invariant-first README links, and a formal `docs/INVARIANTS.md` proof map.
+- Added `docs/stripe-event-matrix.md` covering handled Stripe events, duplicate/replay behavior, and intentionally unsupported refund/dispute/uncollectible flows.
+- Added `docs/concurrency-tests.md`, a PgTAP invariant suite, and a safe TypeScript parallel reserve simulation that proves no-overdraft behavior and crash-recovery refunds against a disposable database.
+- Added deployment/security verification scripts: `scripts/verify-rls.sh`, `scripts/verify-functions.sh`, and `scripts/verify-anon-denied.sh`.
+- Added stronger security-policy guidance for backend-only use, service-role/direct database secrets, Stripe test-key validation, client-role denial, and the supported Stripe + Supabase boundary.
+- Added standalone external-repo workflows under `.github/workflows/` for CodeQL, TypeScript package checks, Python package checks, verification-script syntax, and package dry-runs.
+- Added an explicit README status note explaining that this is a working v0.x OSS primitive with validated invariants and evolving pre-1.0 public contracts.
 
 ### Changed
 
+- Replaced the public status badge, security-policy wording, and Python development classifier from alpha to working/beta, matching the validated production-derived implementation.
 - Normalized the Apache 2.0 `LICENSE` wording to the canonical BabySea OSS format used across public packages.
 - Re-validated `ledger-fortress` against BabySea's production payment and credit implementation across Supabase schemas, the inference credit service, billing webhooks, generation cleanup, and team billing guards.
 - Narrowed the documented OSS contract to the BabySea-derived Stripe + Supabase lifecycle: `add_credits`, `reserve_credits`, `charge_credits`, `refund_credits`, low-balance alerts, crash recovery, and backend-only Supabase security boundaries.
 - Updated README, architecture, provenance, Stripe integration, crash recovery, edge-case, SDK, example, smoke-test, and JSON schema docs to define Stripe and Supabase as the supported stack.
 - Updated TypeScript and Python SDKs/tests so the public API only exposes supported reserve, charge, refund, add, alert, ledger-listing, plan-credit, and orphan-recovery helpers.
 - Updated Docker Compose and real-stack smoke validation to apply only the three supported migrations.
+- Hardened the concurrency simulation so it refuses to run without `LEDGER_FORTRESS_CONFIRM_DISPOSABLE_DB=1`, always generates a fresh account id, never overwrites existing balances, and cleans up only rows it created.
+- Typed the concurrency simulation's local Postgres loader so editor diagnostics can resolve the `pg` runtime dependency from the TypeScript client package and keep reserve-race result types explicit.
+- Expanded client-role denial checks to probe all fortress tables and revoked RPC functions with transaction-wrapped test statements.
+- Documented Supavisor pooler settings for environments where direct Supabase database hosts resolve to IPv6-only addresses.
 
 ### Removed
 
@@ -29,6 +41,8 @@ All notable changes to `ledger-fortress` will be documented here. The format fol
 
 - Confirmed BabySea production uses additive Stripe invoice/checkout credit grants, pre-generation reserve, success charge confirmation, failure/cancel/cleanup refund, low-balance alerts, and scheduled stale-generation cleanup.
 - Confirmed BabySea production does not implement the removed advanced refund/dispute or debt-tracking flows, so they are intentionally outside this OSS surface.
+- Ran TypeScript lint, Vitest, build, package dry-run, and shell syntax checks for verification scripts.
+- Ran the real-stack smoke harness against Stripe test mode and Supabase on 2026-05-06. Result: disposable Stripe customer created/deleted, disposable Supabase schema applied/dropped, migrations loaded, additive grants, reserve, charge, refund, duplicate idempotency, low-balance alerts, RLS, and client-role grant posture validated with 52 assertions.
 
 ## [0.1.2] - 2026-05-02
 

@@ -14,10 +14,11 @@ This file mirrors the README so deploys, IDEs, and tooling that read `AGENTS.md`
 | `client/python/` | Python SDK |
 | `schemas/` | JSON Schemas: `credit-event.v1.json`, `credit-alert.v1.json` |
 | `examples/typescript-sdk-demo/` | TypeScript demo: full lifecycle walkthrough |
+| `examples/concurrency-simulation/` | Real Postgres parallel reserve and crash-recovery demo |
 | `examples/python-sdk-demo/` | Python demo: full lifecycle walkthrough |
 | `examples/docker-compose-local/` | Local dev stack (PostgreSQL with auto-applied migrations) |
 | `examples/real-stack-smoke/` | Safe real Stripe + Supabase smoke validation |
-| `docs/` | Architecture, edge cases, Stripe integration, crash recovery |
+| `docs/` | Architecture, invariants, edge cases, Stripe integration, event matrix, crash recovery, concurrency tests |
 
 ## Conventions
 

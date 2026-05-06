@@ -1,7 +1,7 @@
 {
   "name": "ledger-fortress",
   "version": "0.1.2",
-  "description": "Atomic Stripe + Supabase credit ledger for async AI workloads.",
+  "description": "Atomic credit settlement engine for async inference workloads. Built on Stripe and Supabase.",
   "license": "Apache-2.0",
   "author": "BabySea, Inc. <dev@babysea.ai>",
   "homepage": "https://github.com/babysea-ai/ledger-fortress",
@@ -50,7 +50,9 @@
   "scripts": {
     "build": "tsup src/index.ts src/stripe.ts --format cjs,esm --dts --clean",
     "test": "vitest run",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "test:db:concurrency": "tsx ../../examples/concurrency-simulation/reserve-race.ts",
+    "test:db:pgtap": "bash -c 'set -euo pipefail; output=$(mktemp); psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -f ../../test/invariants.pgtap.sql | tee \"$output\"; ! grep -q \"^not ok\" \"$output\"'"
   },
   "dependencies": {
     "pg": "^8.13.0"
