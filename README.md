@@ -2,15 +2,14 @@
 
 # 🏰 ledger-fortress
 
-**Atomic credit settlement engine for async inference workloads.<br/>
-Built on Stripe and Supabase.**
+**Atomic credit settlement engine for async inference workloads. Built with Stripe and Supabase.**
 
 <br/>
 
 [![Open Source](https://img.shields.io/badge/open%20source-BabySea-48d1cc.svg)](https://babysea.ai)
 [![BabySea OSS Primitives](https://img.shields.io/badge/oss%20primitives-BabySea-ea580c.svg)](#babysea-oss-taxonomy)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/status-production--grade-0969da.svg)](#status)
+[![Status](https://img.shields.io/badge/status-production--grade-0969da.svg)](#9-status)
 [![Sentry](https://img.shields.io/badge/Sentry-code%20guard-362D59.svg?logo=sentry&logoColor=white)](https://sentry.io)
 [![Sentry Project Check](https://github.com/babysea-ai/ledger-fortress/actions/workflows/sentry-check.yml/badge.svg)](https://github.com/babysea-ai/ledger-fortress/actions/workflows/sentry-check.yml)
 [![CodeQL](https://github.com/babysea-ai/ledger-fortress/actions/workflows/codeql.yml/badge.svg)](https://github.com/babysea-ai/ledger-fortress/actions/workflows/codeql.yml)
@@ -21,8 +20,7 @@ Built on Stripe and Supabase.**
 **Infrastructure**
 
 [![Stripe](https://img.shields.io/badge/payments-Stripe-635BFF.svg)](https://stripe.com)
-[![Supabase](https://img.shields.io/badge/platform-Supabase-3ECF8E.svg)](https://supabase.com)
-[![Postgres](https://img.shields.io/badge/ledger-PostgreSQL-4169E1.svg)](https://www.postgresql.org)
+[![Supabase](https://img.shields.io/badge/ledger-Supabase-3ECF8E.svg)](https://supabase.com)
 
 <br/>
 
@@ -42,11 +40,9 @@ BabySea open source projects are organized into three categories:
 
 | Category           | Description                                                                                                                                                                                                                                                         |
 | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **OSS Primitives** | Production-derived infrastructure patterns extracted from BabySea's execution control plane. These projects isolate one hard system invariant at a time, such as provider routing, credit ledgering, idempotency, failover, reconciliation, or operational safety. |
+| **OSS Primitives** | Production-derived infrastructure patterns extracted from BabySea's execution control plane. These projects isolate one hard system invariant at a time, such as provider routing, credit settlement, idempotency, failover, reconciliation, or operational safety. |
 | **SDKs**           | Typed developer entry points into BabySea's execution control plane. SDKs provide application developers with a clean interface for creating, tracking, managing, and settling generative-media workloads without rebuilding provider-specific lifecycle logic.     |
 | **OSS Starters**   | Deployable reference applications that help builders adopt BabySea patterns quickly. Starters combine product UI, auth, billing, storage, rate limits, and BabySea SDK execution into working examples optimized for onboarding and implementation.                 |
-
----
 
 ## BabySea OSS architecture
 
@@ -60,42 +56,76 @@ babysea SDK
 BabySea execution control plane
   ├─ rosetta-bridge     request normalization
   ├─ adaptive-island    provider ranking
-  ├─ execution-arrow    /v1/generate image/video execution
+  ├─ execution-arrow    /v1/generate image/video execution (coming-soon)
   └─ ledger-fortress    credit settlement
 ```
 
-🏹 [execution-arrow](/#) is the upcoming generation-execution primitive for `/v1/generate`. The link is temporary until the primitive launches.
+## Table of contents
 
-`ledger-fortress` owns the credit-lifecycle invariant: reserve before dispatch,
-charge on success, refund on failure/cancel/crash recovery, and make duplicate
-events safe at the database boundary.
+1. [Overview](#1-overview)
+    - [What this is](#what-this-is)
+    - [Short version](#short-version)
+    - [Production lineage](#production-lineage)
+    - [Grounding rule](#grounding-rule)
+    - [Adoption path](#adoption-path)
+2. [Stack contract](#2-stack-contract)
+3. [Terminology](#3-terminology)
+4. [Boundaries](#4-boundaries)
+5. [Architecture](#5-architecture)
+6. [Quick start](#6-quick-start)
+    - [Apply the migrations to your Supabase database](#apply-the-migrations-to-your-supabase-database)
+    - [Validate against real Stripe + Supabase services](#validate-against-real-stripe--supabase-services)
+    - [Verify deployment security posture](#verify-deployment-security-posture)
+    - [Use the TypeScript SDK](#use-the-typescript-sdk)
+    - [Use the Python SDK](#use-the-python-sdk)
+    - [Just use the schemas](#just-use-the-schemas)
+7. [Core capabilities](#7-core-capabilities)
+    - [Why it's different](#why-its-different)
+    - [The credit lifecycle](#the-credit-lifecycle)
+    - [Using the SDK](#using-the-sdk)
+    - [The seven edge cases](#the-seven-edge-cases)
+    - [Stripe integration](#stripe-integration)
+    - [Stripe refund and dispute boundary](#stripe-refund-and-dispute-boundary)
+    - [Pricing boundary](#pricing-boundary)
+    - [Credit alerts](#credit-alerts)
+    - [Crash recovery](#crash-recovery)
+    - [Fail-open by design](#fail-open-by-design)
+8. [Production readiness](#8-production-readiness)
+9. [Status](#9-status)
+10. [Community](#10-community)
+    - [Who's using it](#whos-using-it)
+    - [Related projects](#related-projects)
+    - [Contributing](#contributing)
+11. [License](#11-license)
+12. [Acknowledgements](#12-acknowledgements)
 
 ---
 
-## What this is
+## 1. Overview
 
-`ledger-fortress` is a production-grade open-source credit ledger inspired by the core invariants used in [BabySea](https://babysea.ai)'s real Stripe + Supabase credit system: atomic reserve ➜ charge ➜ refund, additive Stripe grants, database-enforced idempotency, low-balance alert state, stale-generation cleanup, and backend-only Supabase security boundaries. The OSS package adapts that proven pattern for teams building on **Stripe + Supabase**.
+### What this is
 
-**30-second version:** AI generation billing is hard because work is async. You
-must reserve before dispatch, charge on success, refund on failure, survive
-duplicate webhooks, and recover crashed jobs. `ledger-fortress` packages that
-lifecycle with Stripe + Supabase/Postgres.
+`ledger-fortress` is a production-grade open-source credit ledger inspired by the core invariants used in BabySea's real Stripe + Supabase credit system: atomic reserve ➜ charge ➜ refund, additive Stripe grants, database-enforced idempotency, low-balance alert state, stale-generation cleanup, and backend-only Supabase security boundaries. The OSS package adapts that proven pattern for teams building on **Stripe + Supabase**.
 
-**Deliberate boundary:** `ledger-fortress` grants credits from paid Stripe
-invoice and checkout events. It does not automatically claw back credits for
-Stripe refunds, disputes, chargebacks, uncollectible invoices, or support-driven
-deductions. Keep those payment workflows in your billing/support system unless
-you implement and validate an explicit extension.
+### Short version
 
-**Grounding rule:** public OSS behavior is limited to flows BabySea actually operates: Stripe subscription invoices, Stripe one-time credit-pack checkouts, Supabase `credits`/`credit_ledger`, reserve-before-dispatch, charge-on-success, refund-on-failure/cancel/cleanup, low-balance alert state, and service-role/backend-only mutation access. Where the OSS uses a different helper name or removes BabySea-specific tables, the underlying invariant maps back to those production paths.
+AI generation billing is hard because work is async. You must reserve before dispatch, charge on success, refund on failure, survive duplicate webhooks, and recover crashed jobs. `ledger-fortress` packages that lifecycle with Stripe + Supabase.
+
+### Production lineage
+
+`ledger-fortress` packages the credit-lifecycle pattern BabySea operates for async image and video generation workloads. It turns the production Stripe + Supabase ledger boundary into a standalone OSS primitive for community deployments.
+
+### Grounding rule
+
+Public OSS behavior is limited to flows BabySea actually operates: Stripe subscription invoices, Stripe one-time credit-pack checkouts, Supabase `credits`/`credit_ledger`, reserve-before-dispatch, charge-on-success, refund-on-failure/cancel/cleanup, low-balance alert state, and service-role/backend-only mutation access. Where the OSS uses a different helper name or removes BabySea-specific tables, the underlying invariant maps back to those production paths.
 
 For the exact split between BabySea-mirrored behavior and OSS-generalized extensions, see [`docs/babysea-provenance.md`](docs/babysea-provenance.md).
 
-If you run an **AI generation platform** (images, video, audio, 3D - anything where the workload runs asynchronously), this repo gives you the BabySea-style credit lifecycle. Apply the SQL migrations to Supabase, then call the SDK (TypeScript or Python) from your backend.
+### Adoption path
 
-You bring your Stripe account and your Supabase project. The fortress handles the ledger boundary.
+If you run an **AI generation platform** (images, video, audio, 3D - anything where the workload runs asynchronously), this repo gives you the BabySea-style credit lifecycle. Apply the SQL migrations to Supabase, then call the SDK (TypeScript or Python) from your backend. You bring your Stripe account and your Supabase project. The fortress handles the ledger boundary.
 
-## Stack contract
+## 2. Stack contract
 
 `ledger-fortress` deliberately uses the same stack boundary as BabySea's credit system:
 
@@ -106,7 +136,9 @@ You bring your Stripe account and your Supabase project. The fortress handles th
 | Application runtime | Backend TypeScript/Python | Calls SQL functions through a service-role/direct database connection; never writes ledger tables from client code. |
 | Customer notification state | Supabase | Low-balance alert settings and deduplication state. Delivery is fire-and-forget outside the credit ledger invariant. |
 
-## Terms
+Supabase is the supported production and community ledger authority. PostgreSQL appears only when referring to Supabase's SQL engine behavior, PostgreSQL-compatible connection URLs, `psql` migration tooling, database client libraries, Supabase connection details, or local developer smoke stand-ins.
+
+## 3. Terminology
 
 | Term | Meaning in this package |
 |---|---|
@@ -117,28 +149,15 @@ You bring your Stripe account and your Supabase project. The fortress handles th
 | Additive grant | Credits from Stripe invoice or checkout events. Grants add to existing balance and never reset rollover credits. |
 | Backend-only boundary | Client roles must not read or write ledger tables directly; app servers call hardened functions. |
 
-## What this is not
+## 4. Boundaries
 
 - Not a provider router, model catalog, or generation orchestrator.
 - Not a client-side balance cache; Supabase is the source of truth.
 - Not a generic payment abstraction. The implemented reconciliation path is Stripe-specific.
+- Not automatic clawback handling for Stripe refunds, disputes, chargebacks, uncollectible invoices, or support-driven deductions.
 - Not BabySea's account, subscription, notification, or provider schema. You map your app's account IDs into the fortress functions.
 
-## Why it's different
-
-Every AI generation platform reinvents the same billing stack. They hit the same wall.
-
-| Problem (real, painful, recurring) | How `ledger-fortress` solves it |
-|---|---|
-| **Race conditions.** User clicks "Generate" twice in 50ms. Both requests check the balance before either deducts. Overdraw. | Single `UPDATE ... WHERE tokens >= cost` - atomic check-and-deduct in one statement. No TOCTOU window exists. |
-| **Lost credits.** Provider crashes mid-generation. No webhook arrives. Credits reserved forever. User churns. | Crash recovery cron finds orphans older than `windowMinutes` and refunds them. Idempotent with the success path. |
-| **Duplicate ledger events.** Stripe retries a webhook. Handler runs twice. User credited twice. Or a provider callback refunds twice. | Unique partial indexes cover `charge`, `refund`, `reserve`, and additive Stripe grants keyed on `(account_id, description)`. Exactly-once at the SQL level. |
-| **Webhooks arrive out of order.** Refund hits before the charge confirmation. User could generate for free. | `charge_credits` checks for prior refund and re-deducts atomically before logging charge. If it cannot fully collect, it returns `FALSE` for application review. `refund_credits` checks for prior charge and no-ops. |
-| **Stale credit-pack checkout.** User starts a credit-pack checkout, cancels subscription, then completes payment. | The Stripe helper supports a `hasActiveSubscription` callback so checkout completion can be denied at webhook time, not only at session creation. |
-| **Credit packs vanish on subscription renewal.** User buys $10 pack, then renewal "resets" the balance. Pack lost. | `add_credits` is additive (`tokens = tokens + amount`), never resets. Audit trail shows every grant. |
-| **Anyone with the Supabase anon key can read or forge ledger entries.** | Migration `003_security.sql` enables RLS, REVOKEs anon/authenticated access, and runs mutations as `SECURITY DEFINER` with locked `search_path`. |
-
-## Architecture
+## 5. Architecture
 
 ```text
 Stripe Checkout/Billing
@@ -166,9 +185,9 @@ RLS + SECURITY DEFINER backend-only mutation boundary
 - 💳 **[Stripe](https://stripe.com)** - subscriptions, one-time purchases, webhook reconciliation
 - 🔒 **Exactly-once guarantees** - idempotency keys at the SQL level, not the application level
 
-## Quick start
+## 6. Quick start
 
-### Option 1. Apply the migrations to your Supabase database
+### Apply the migrations to your Supabase database
 
 ```bash
 git clone https://github.com/babysea-ai/ledger-fortress
@@ -188,7 +207,7 @@ That's it. You get:
 - **RLS enabled on every table** with anon/authenticated table access revoked; runtime access goes through your backend and fortress functions
 - All mutating functions run as `SECURITY DEFINER` with locked `search_path`
 
-### Option 1b. Validate against real Stripe + Supabase services
+### Validate against real Stripe + Supabase services
 
 Use the non-destructive smoke harness before promoting a deployment:
 
@@ -203,7 +222,7 @@ SUPABASE_DB_PASSWORD="..." \
 
 See [`examples/real-stack-smoke/`](examples/real-stack-smoke/) for the required environment and cleanup behavior.
 
-### Option 1c. Verify deployment security posture
+### Verify deployment security posture
 
 After applying all three migrations to a real deployment, verify RLS, hardened
 functions, and client-role denial:
@@ -219,7 +238,7 @@ to IPv6 only, use the Supavisor pooler with `SUPABASE_DB_HOST`,
 `SUPABASE_DB_PORT=6543`, and `SUPABASE_DB_USER=postgres.<project-ref>` when
 building the database URL.
 
-### Option 2. Use the TypeScript SDK
+### Use the TypeScript SDK
 
 The TypeScript SDK is not yet published to npm. Apply the Option 1 migrations first so the tables and SQL functions exist, then build it from a checked-out copy of the repo and install it into your application from that local path:
 
@@ -278,7 +297,7 @@ async function runGeneration() {
 runGeneration().catch(console.error);
 ```
 
-### Option 3. Use the Python SDK
+### Use the Python SDK
 
 The Python SDK is not yet published to PyPI. Apply the Option 1 migrations first so the tables and SQL functions exist, then install from source or pin to a commit SHA:
 
@@ -331,11 +350,27 @@ else:
 
 The Python SDK exposes the same core lifecycle as the TypeScript SDK: add credits, reserve, charge, refund, list the ledger, and run crash recovery.
 
-### Option 4. Just use the schemas
+### Just use the schemas
 
 The JSON schemas in [`schemas/`](schemas/) are the contract. Emit `credit-event.v1.json` events; your pipeline consumes them.
 
-## The credit lifecycle
+## 7. Core capabilities
+
+### Why it's different
+
+Every AI generation platform reinvents the same billing stack. They hit the same wall.
+
+| Problem (real, painful, recurring) | How `ledger-fortress` solves it |
+|---|---|
+| **Race conditions.** User clicks "Generate" twice in 50ms. Both requests check the balance before either deducts. Overdraw. | Single `UPDATE ... WHERE tokens >= cost` - atomic check-and-deduct in one statement. No TOCTOU window exists. |
+| **Lost credits.** Provider crashes mid-generation. No webhook arrives. Credits reserved forever. User churns. | Crash recovery cron finds orphans older than `windowMinutes` and refunds them. Idempotent with the success path. |
+| **Duplicate ledger events.** Stripe retries a webhook. Handler runs twice. User credited twice. Or a provider callback refunds twice. | Unique partial indexes cover `charge`, `refund`, `reserve`, and additive Stripe grants keyed on `(account_id, description)`. Exactly-once at the SQL level. |
+| **Webhooks arrive out of order.** Refund hits before the charge confirmation. User could generate for free. | `charge_credits` checks for prior refund and re-deducts atomically before logging charge. If it cannot fully collect, it returns `FALSE` for application review. `refund_credits` checks for prior charge and no-ops. |
+| **Stale credit-pack checkout.** User starts a credit-pack checkout, cancels subscription, then completes payment. | The Stripe helper supports a `hasActiveSubscription` callback so checkout completion can be denied at webhook time, not only at session creation. |
+| **Credit packs vanish on subscription renewal.** User buys $10 pack, then renewal "resets" the balance. Pack lost. | `add_credits` is additive (`tokens = tokens + amount`), never resets. Audit trail shows every grant. |
+| **Anyone with the Supabase anon key can read or forge ledger entries.** | Migration `003_security.sql` enables RLS, REVOKEs anon/authenticated access, and runs mutations as `SECURITY DEFINER` with locked `search_path`. |
+
+### The credit lifecycle
 
 ```
  reserve()          charge()            refund()
@@ -353,7 +388,7 @@ The JSON schemas in [`schemas/`](schemas/) are the contract. Emit `credit-event.
                 crash recovery cron
 ```
 
-## Using the SDK
+### Using the SDK
 
 The TypeScript and Python SDKs share the same reserve ➜ charge ➜ refund core contract. BabySea computes model cost before reserve; use one reservation amount and then either `charge()` on success or `refund()` on failure/cancel/cleanup.
 
@@ -378,7 +413,7 @@ if (reserved) {
 
 See [`examples/typescript-sdk-demo/`](examples/typescript-sdk-demo/) and [`examples/python-sdk-demo/`](examples/python-sdk-demo/) for end-to-end demos that add credits, reserve, charge or refund, inspect the ledger, and run crash recovery.
 
-## The seven edge cases
+### The seven edge cases
 
 | Edge case | What goes wrong | How the fortress handles it |
 |---|---|---|
@@ -390,7 +425,7 @@ See [`examples/typescript-sdk-demo/`](examples/typescript-sdk-demo/) and [`examp
 | **Refund arrives AFTER charge** | Would return credits for a successful generation | Guard: `refund_credits` checks if already charged - if yes, no-op. Serialized via `FOR UPDATE` |
 | **Terminal event without reserve** | App bug calls charge/refund for a generation that never reserved credits | Terminal functions require a matching `reserve` row for the same account and generation |
 
-## Stripe integration
+### Stripe integration
 
 `ledger-fortress` includes ready-to-use Stripe webhook handlers with HMAC signature verification:
 
@@ -425,7 +460,7 @@ export async function POST(req: Request) {
 //                              (paid credit pack purchase, idempotent via payment intent/session ID)
 ```
 
-### Plans configuration
+#### Plans configuration
 
 BabySea stores Stripe Price IDs in a Supabase `plans` table. The OSS keeps that table so your backend can map Stripe prices to credit allocations when your product policy needs plan-based grants or plan-aware UI:
 
@@ -441,17 +476,17 @@ Credits are **additive** (rollover, never reset). A Pro subscriber who buys a $1
 
 By default, the Stripe helper mirrors BabySea's current grant path: it grants credits from the amount Stripe reports as paid (`amount_paid/100` for subscription invoices or `amount_total/100` for credit-pack checkouts) and skips non-positive amounts. Use `resolveInvoiceCredits` or `resolveCheckoutCredits` only when your own Stripe Price ID policy explicitly maps to fixed credits in `plans.tokens`; those resolvers are a portable helper over the real `plans` table pattern, not a new payment workflow.
 
-## Stripe refund and dispute boundary
+### Stripe refund and dispute boundary
 
 BabySea's current credit implementation does not automatically deduct credits for Stripe `charge.refunded` or `charge.dispute.created` events, so `ledger-fortress` does not ship those flows. Handle payment refunds and disputes in Stripe/support workflows outside this package.
 
 For the full handled/skipped event matrix, see [`docs/stripe-event-matrix.md`](docs/stripe-event-matrix.md).
 
-## Pricing boundary
+### Pricing boundary
 
 BabySea computes the model cost before `reserve_credits()` using model pricing, duration, resolution, and audio-mode inputs. `ledger-fortress` follows that approach: reserve the exact amount your application has accepted for the generation, then call `charge()` or `refund()` for the same amount.
 
-## Credit alerts
+### Credit alerts
 
 Built-in low-balance notifications with state-machine deduplication:
 
@@ -477,7 +512,7 @@ const alerts = await fortress.checkAlerts('00000000-0000-0000-0000-000000000001'
 | Non-blocking | Alert checks never block the generation response |
 | Max 10 thresholds | Validated at the SQL level |
 
-## Crash recovery
+### Crash recovery
 
 One cron endpoint. Run it every 5 minutes:
 
@@ -499,7 +534,7 @@ console.log(result);
 // { inspected: 12, refunded: 3, errors: 0 }
 ```
 
-## Fail-open by design
+### Fail-open by design
 
 | Failure | Behavior |
 |---|---|
@@ -511,7 +546,7 @@ console.log(result);
 
 The reserve path is **on the critical path** (it must be - you can't generate without credits). But it's exactly one atomic SQL statement. Everything else is eventually consistent.
 
-## Production checklist
+## 8. Production readiness
 
 Before going live with real Stripe payments:
 
@@ -531,15 +566,15 @@ Before going live with real Stripe payments:
 
 For a proof-oriented map from invariants to SQL mechanisms, see [`docs/INVARIANTS.md`](docs/INVARIANTS.md).
 
-## Status
+## 9. Status
 
-`ledger-fortress` is a **production-grade working OSS primitive** (v0.1.2). The reserve ➜ charge ➜ refund core mirrors [BabySea](https://babysea.ai)'s production credit lifecycle approach for 80+ AI models across 12+ labs. This repo packages and generalizes those credit ledger invariants for community Stripe + Supabase deployments. See [`CHANGELOG.md`](CHANGELOG.md).
+`ledger-fortress` is a **production-grade working OSS primitive** (v0.1.0). The reserve ➜ charge ➜ refund core mirrors [BabySea](https://babysea.ai)'s production credit lifecycle approach for 80+ AI models across 12+ labs. This repo packages and generalizes those credit ledger invariants for community Stripe + Supabase deployments. See [`CHANGELOG.md`](CHANGELOG.md).
 
 The ledger invariants are ready for production use when you apply all migrations, keep client roles outside the ledger, verify Stripe signatures, and run the deployment checks. The package is still v0.x, so distribution details such as package publishing and non-invariant SDK ergonomics can evolve before 1.0; that does not weaken the current Stripe + Supabase credit lifecycle guarantees below, which are documented, tested, and real-stack smoke-validated.
 
 Both the TypeScript and Python SDKs build. The TypeScript SDK ships with tests. Neither is published to npm/PyPI yet for 0.1; install from source or pin to a commit SHA.
 
-## Current v0.1 surface
+**Current v0.1 surface:**
 
 - [x] Atomic reserve ➜ charge ➜ refund lifecycle
 - [x] Idempotent Stripe invoice and checkout reconciliation
@@ -550,28 +585,28 @@ Both the TypeScript and Python SDKs build. The TypeScript SDK ships with tests. 
 - [x] Supabase migrations with RLS and `SECURITY DEFINER`
 - [x] Non-destructive real-stack smoke harness for Stripe + Supabase
 
-## Who's using it
+## 10. Community
+
+### Who's using it
 
 - **[BabySea](https://babysea.ai)**: the execution control plane for generative media. 80+ image and video models from 12+ AI labs, using the reserve ➜ charge ➜ refund core pattern this project packages.
 
 *Using `ledger-fortress`? Open a PR to add yourself.*
 
-## Related projects
+### Related projects
 
 - 🌊 [BabySea SDK](https://github.com/babysea-ai/babysea): Production TypeScript SDK for the BabySea execution control plane for generative media. One API, one schema, one lifecycle across image and video inference providers.
-- 🏝️ [adaptive-island](https://github.com/babysea-ai/adaptive-island): Cache-first provider selection engine for multi-provider inference workloads. Built on Databricks, Supabase, and Upstash.
+- 🏝️ [adaptive-island](https://github.com/babysea-ai/adaptive-island): Cache-first provider selection engine for multi-provider inference workloads. Built with Databricks, Supabase, and Upstash.
 - 🌉 [rosetta-bridge](https://github.com/babysea-ai/rosetta-bridge): Request normalization engine for multi-provider inference workloads. Built with JSON Schema and TypeScript adapters.
 
-## Contributing
+### Contributing
 
 We welcome PRs, issues, and design discussion. See [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
 
-## License
+## 11. License
 
 [Apache License 2.0](LICENSE). Use it, fork it, ship it. Just keep the notice.
 
-## Acknowledgements
+## 12. Acknowledgements
 
-Built with **Stripe** and **Supabase**.
-
-Powered by open-source foundations including **PostgreSQL**, with Postgres-native security through **RLS** and **SECURITY DEFINER** functions deployed on Supabase, plus Stripe-native reconciliation through invoices and checkout sessions.
+Built with [**Stripe**](https://stripe.com) and [**Supabase**](https://supabase.com).

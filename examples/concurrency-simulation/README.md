@@ -1,6 +1,7 @@
 # Concurrency simulation
 
-This demo proves the reserve invariant against a real PostgreSQL database:
+This demo proves the reserve invariant against a disposable Supabase project or
+local PostgreSQL developer stand-in:
 
 - start with a known credit balance;
 - launch many parallel `reserve_credits(...)` calls;

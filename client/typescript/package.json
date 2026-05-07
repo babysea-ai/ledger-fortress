@@ -1,7 +1,7 @@
 {
   "name": "ledger-fortress",
-  "version": "0.1.2",
-  "description": "Atomic credit settlement engine for async inference workloads. Built on Stripe and Supabase.",
+  "version": "0.1.0",
+  "description": "Atomic credit settlement engine for async inference workloads. Built with Stripe and Supabase.",
   "license": "Apache-2.0",
   "author": "BabySea, Inc. <dev@babysea.ai>",
   "homepage": "https://github.com/babysea-ai/ledger-fortress",

@@ -1,7 +1,8 @@
 # Concurrency and SQL invariant tests
 
 `ledger-fortress` exposes two database-level verification paths. Both require a
-disposable Postgres/Supabase database with the migrations applied.
+disposable Supabase project or local PostgreSQL developer stand-in with the
+migrations applied.
 
 ## PgTAP invariants
 

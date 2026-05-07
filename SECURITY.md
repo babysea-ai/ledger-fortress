@@ -25,7 +25,7 @@ credit operation.
 
 ## Secret handling
 
-- Keep Supabase service-role keys, direct Postgres URLs, database passwords, and Stripe secret/webhook keys server-side only.
+- Keep Supabase service-role keys, Supabase database URLs, direct database passwords, and Stripe secret/webhook keys server-side only.
 - Use Stripe test-mode restricted keys for smoke validation. The real-stack smoke harness refuses live Stripe keys.
 - Do not commit `.env`, smoke-test result files, database URLs, or webhook payloads containing customer metadata.
 - Scope CI secrets to the repository/environment that actually runs the smoke test.

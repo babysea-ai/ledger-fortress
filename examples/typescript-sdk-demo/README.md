@@ -5,7 +5,7 @@ Demonstrates the full credit lifecycle: reserve ➜ generate ➜ charge or refun
 ## Prerequisites
 
 - Node.js 18+
-- PostgreSQL (local or remote)
+- Supabase project or local PostgreSQL developer stand-in
 - ledger-fortress migrations applied
 
 ## Run

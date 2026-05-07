@@ -1,6 +1,7 @@
 # Docker Compose Local Stack
 
-Run the core ledger-fortress demo stack locally with PostgreSQL.
+Run the core ledger-fortress demo stack locally with a PostgreSQL developer
+stand-in for Supabase.
 
 ## Start
 

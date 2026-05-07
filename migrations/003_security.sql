@@ -5,8 +5,8 @@
 -- This migration enforces a strict security boundary: ledger-fortress tables
 -- are NEVER exposed to client-side code (anon/authenticated roles in Supabase).
 -- All access goes through:
---   1. Direct Postgres connection (your backend with the service-role key), OR
---   2. The provided RPC functions, which run with SECURITY DEFINER.
+--   1. Direct Supabase database connection from your trusted backend using database credentials, OR
+--   2. Backend-only Supabase RPC calls using the service-role key to the provided SECURITY DEFINER functions.
 --
 -- Apply with: psql "$DATABASE_URL" < migrations/003_security.sql
 --
@@ -39,7 +39,7 @@ COMMENT ON TABLE credit_ledger IS 'RLS deny-all. Immutable audit trail, write on
 COMMENT ON TABLE credit_alert_settings IS 'RLS deny-all. Manage via fortress.setAlertSettings().';
 COMMENT ON TABLE credit_alert_log IS 'RLS deny-all. Internal state machine.';
 
--- Portability note: do not FORCE RLS here. On plain Postgres, SECURITY DEFINER
+-- Portability note: do not FORCE RLS here. On local PostgreSQL developer stand-ins, SECURITY DEFINER
 -- functions commonly run as the table owner; FORCE RLS would make that owner
 -- subject to deny-all policies and break the SDK unless the owner has BYPASSRLS.
 -- If your deployment uses a dedicated owner role with BYPASSRLS, you may add
@@ -54,7 +54,7 @@ COMMENT ON TABLE credit_alert_log IS 'RLS deny-all. Internal state machine.';
 
 DO $$
 BEGIN
-  -- Only revoke if these roles exist (they do on Supabase, may not on plain Postgres).
+  -- Only revoke if these roles exist (they do on Supabase, may not on local PostgreSQL stand-ins).
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
     REVOKE ALL ON plans                  FROM anon;
     REVOKE ALL ON credits                FROM anon;

@@ -5,7 +5,7 @@ Demonstrates the full credit lifecycle: reserve ➜ generate ➜ charge or refun
 ## Prerequisites
 
 - Python 3.10+
-- PostgreSQL (local or remote)
+- Supabase project or local PostgreSQL developer stand-in
 - ledger-fortress migrations applied
 
 ## Run

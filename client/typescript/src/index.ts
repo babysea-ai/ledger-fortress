@@ -2,7 +2,7 @@
  * ledger-fortress TypeScript SDK.
  *
  * Atomic Stripe + Supabase credit ledger for async AI workloads.
- * Wraps the PostgreSQL functions with a type-safe interface.
+ * Wraps the Supabase SQL functions with a type-safe interface.
  *
  * Copyright 2026 BabySea, Inc.
  * Licensed under the Apache License, Version 2.0.
@@ -14,7 +14,7 @@ import pg from 'pg';
 // ---------------------------------------------------------------------------
 
 export interface LedgerFortressOptions {
-  /** Postgres connection string. */
+  /** Supabase database connection string. */
   databaseUrl: string;
   /** pg.Pool options override. */
   poolOptions?: pg.PoolConfig;
@@ -147,7 +147,7 @@ export class LedgerFortress {
       max: 10,
       // Close idle clients after 30s to free connections.
       idleTimeoutMillis: 30_000,
-      // Fail fast if Postgres is unreachable instead of hanging the request.
+      // Fail fast if the database is unreachable instead of hanging the request.
       connectionTimeoutMillis: 10_000,
       // Hard ceiling on individual queries (prevents lock-up on stuck queries).
       statement_timeout: 30_000,

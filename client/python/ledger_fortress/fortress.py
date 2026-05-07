@@ -5,7 +5,7 @@
 ledger-fortress Python SDK.
 
 Atomic Stripe + Supabase credit ledger for async AI workloads.
-Wraps the PostgreSQL functions with a type-safe interface.
+Wraps the Supabase SQL functions with a type-safe interface.
 """
 
 from __future__ import annotations

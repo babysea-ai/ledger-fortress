@@ -66,7 +66,7 @@ WHERE account_id = p_account_id
 RETURNING tokens;
 ```
 
-If two requests race, PostgreSQL serializes the updates. The second request sees the new balance and fails cleanly if there is not enough left.
+If two requests race, PostgreSQL, as Supabase's SQL engine, serializes the row updates. The second request sees the new balance and fails cleanly if there is not enough left.
 
 ### 2. Exactly-once terminal events
 
@@ -117,9 +117,9 @@ reserved ➜ refunded
 ## Deployment boundary
 
 - Supabase is the source of truth for balance and ledger state.
-- Run migrations over a direct/session connection; run runtime traffic through a transaction-mode Supabase pooler when using Supabase-hosted Postgres.
+- Run migrations over a direct/session connection; run runtime traffic through a transaction-mode Supabase pooler.
 - Webhooks, cron, and application servers can fail independently because ledger transitions are replay-safe.
-- The application decides when to start work; PostgreSQL decides whether the account can afford it.
+- The application decides when to start work; the Supabase-hosted PostgreSQL transaction decides whether the account can afford it.
 
 ## Real-stack validation
 
