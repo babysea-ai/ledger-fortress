@@ -70,6 +70,8 @@ junit.xml
 !.env.example
 !.env.sample
 !.env.template
+.sentryclirc
+.sentryclirc.*
 *.pem
 *.key
 *.crt

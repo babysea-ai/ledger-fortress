@@ -12,7 +12,9 @@ Do not open a public issue for suspected vulnerabilities. We will acknowledge va
 
 ## Sentry code guard
 
-The public OSS repository is connected to the `babysea-hq` Sentry organization for repository ownership and issue routing. Sentry ownership maps the repository to the `#babysea-ai` team. No Sentry SDK, DSN, tracing, or runtime telemetry is included in this package.
+The public OSS repository is connected to a private, repository-specific Sentry project for repository ownership, Seer-assisted review, and issue routing. The Sentry organization slug and project slug are intentionally not committed to this public repo.
+
+This repo keeps Sentry as a repository guardrail, not runtime telemetry. It ships `scripts/sentry-project-check.mjs` and a scheduled `Sentry Project Check` workflow that verifies the configured project slug, active status, `other` platform, and Code Guard ownership rules using GitHub Actions secrets only. Use `SENTRY_AUTH_TOKEN`, `SENTRY_ORG`, and `SENTRY_PROJECT` as repository secrets. Local `.sentryclirc` files are ignored by git. No Sentry SDK, DSN, tracing, or runtime telemetry is included in this package.
 
 ## Runtime posture
 
