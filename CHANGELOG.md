@@ -17,12 +17,13 @@ All notable changes to `ledger-fortress` will be documented here. The format fol
 - Added stronger security-policy guidance for backend-only use, service-role/direct database secrets, Stripe test-key validation, client-role denial, and the supported Stripe + Supabase boundary.
 - Added standalone external-repo workflows under `.github/workflows/` for CodeQL, TypeScript package checks, Python package checks, verification-script syntax, and package dry-runs.
 - Added an explicit README status note explaining that this is a working v0.x OSS primitive with validated invariants and evolving pre-1.0 public contracts.
-- Added the upcoming 🏹 `execution-arrow` primitive to the shared README architecture map with its temporary `/#` launch link and `/v1/generate/image` + `/v1/generate/video` scope.
+- Added the upcoming `execution-arrow` primitive to the shared README architecture map with its temporary `/#` launch link and `/v1/generate/image` + `/v1/generate/video` scope.
 - Added README workflow badges for the standalone CodeQL and Package Check workflows.
 - Added `scripts/sentry-project-check.mjs`, a README badge, ignored local `.sentryclirc` support, and a scheduled `Sentry Project Check` workflow. The workflow reads Sentry org/project configuration from GitHub Actions secrets, verifies the configured project slug, active status, `other` platform, ownership, and Code Guard rules, and does not add runtime tracking.
 
 ### Changed
 
+- Reorder the badge.
 - Replaced the public status badge, security-policy wording, and Python development classifier from alpha to working/beta, matching the validated production-derived implementation.
 - Changed the working status badge color from green to blue for OSS primitive status consistency.
 - Clarified the README status as production-grade Stripe + Supabase ledger invariants with v0.x distribution ergonomics, rather than uncertain invariant maturity.

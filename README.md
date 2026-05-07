@@ -10,11 +10,11 @@ Built on Stripe and Supabase.**
 [![Open Source](https://img.shields.io/badge/open%20source-BabySea-48d1cc.svg)](https://babysea.ai)
 [![BabySea OSS Primitives](https://img.shields.io/badge/oss%20primitives-BabySea-ea580c.svg)](#babysea-oss-taxonomy)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/status-working-0969da.svg)](#status)
-[![CodeQL](https://github.com/babysea-ai/ledger-fortress/actions/workflows/codeql.yml/badge.svg)](https://github.com/babysea-ai/ledger-fortress/actions/workflows/codeql.yml)
-[![Package Check](https://github.com/babysea-ai/ledger-fortress/actions/workflows/publish-check.yml/badge.svg)](https://github.com/babysea-ai/ledger-fortress/actions/workflows/publish-check.yml)
+[![Status](https://img.shields.io/badge/status-production--grade-0969da.svg)](#status)
 [![Sentry](https://img.shields.io/badge/Sentry-code%20guard-362D59.svg?logo=sentry&logoColor=white)](https://sentry.io)
 [![Sentry Project Check](https://github.com/babysea-ai/ledger-fortress/actions/workflows/sentry-check.yml/badge.svg)](https://github.com/babysea-ai/ledger-fortress/actions/workflows/sentry-check.yml)
+[![CodeQL](https://github.com/babysea-ai/ledger-fortress/actions/workflows/codeql.yml/badge.svg)](https://github.com/babysea-ai/ledger-fortress/actions/workflows/codeql.yml)
+[![Package Check](https://github.com/babysea-ai/ledger-fortress/actions/workflows/publish-check.yml/badge.svg)](https://github.com/babysea-ai/ledger-fortress/actions/workflows/publish-check.yml)
 
 <br/>
 
@@ -64,9 +64,7 @@ BabySea execution control plane
   └─ ledger-fortress    credit settlement
 ```
 
-🏹 [execution-arrow](/#) is the upcoming generation-execution primitive for
-`/v1/generate/image` and `/v1/generate/video`; the link is temporary until
-launch.
+🏹 [execution-arrow](/#) is the upcoming generation-execution primitive for `/v1/generate`. The link is temporary until the primitive launches.
 
 `ledger-fortress` owns the credit-lifecycle invariant: reserve before dispatch,
 charge on success, refund on failure/cancel/crash recovery, and make duplicate
