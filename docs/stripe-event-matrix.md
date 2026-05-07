@@ -15,10 +15,10 @@
 | Case | Expected behavior |
 |---|---|
 | Duplicate invoice webhook | Second delivery no-ops because the add idempotency key already exists. |
-| Duplicate checkout webhook | Second delivery no-ops because the order idempotency key already exists. |
-| Zero-dollar invoice | Custom `resolveInvoiceCredits` can still grant fixed plan credits; otherwise no positive amount is granted. |
-| Discounted invoice | Default amount-based grants use Stripe's paid amount; plan-based grants should use `resolveInvoiceCredits`. |
-| Trial invoice | Treat as zero-dollar unless your resolver maps the plan to fixed credits. |
+| Duplicate checkout webhook | Second delivery no-ops because the checkout idempotency key already exists. |
+| Zero-dollar invoice | Default BabySea-derived behavior grants nothing because there is no positive paid amount. A deliberate plan-based resolver may grant fixed credits if that is your product policy. |
+| Discounted invoice | Default amount-based grants use Stripe's paid amount. Use a plan-based resolver only if your policy grants fixed credits by Stripe Price ID. |
+| Trial invoice | Default behavior treats it as zero-dollar. A deliberate plan-based resolver may map the Stripe Price ID to fixed credits. |
 | Unknown Stripe customer | Handler should skip/return a non-mutating result because `resolveAccountId` returns `null`. |
 | Inactive subscription credit-pack attempt | If `hasActiveSubscription` is provided and returns `false`, the checkout is denied. |
 | Malformed signature | Reject before constructing or handling the Stripe event. |
@@ -40,5 +40,5 @@
 - Verify the raw Stripe payload with `verifyStripeSignature()` before calling the handler.
 - Store only webhook secrets in deployment secrets; do not hard-code them in source.
 - Use restricted Stripe keys for application-owned Stripe API calls.
-- Map Stripe Price IDs into `plans` before relying on fixed-credit grants.
+- Map Stripe Price IDs into `plans` before relying on fixed-credit grants or plan-aware billing UI.
 - Keep refund/dispute handling visibly outside `ledger-fortress` unless you implement and test an extension.

@@ -25,6 +25,10 @@ All notable changes to `ledger-fortress` will be documented here. The format fol
 
 - Replaced the public status badge, security-policy wording, and Python development classifier from alpha to working/beta, matching the validated production-derived implementation.
 - Changed the working status badge color from green to blue for OSS primitive status consistency.
+- Clarified the README status as production-grade Stripe + Supabase ledger invariants with v0.x distribution ergonomics, rather than uncertain invariant maturity.
+- Refined Stripe integration docs so the default grant path mirrors BabySea's current amount-paid behavior, while `get_plan_credits()` and custom resolvers are documented as explicit plan-table helpers rather than a separate payment workflow.
+- Added a provenance section distinguishing BabySea-specific production tables from OSS helpers for plan lookup, orphan detection, and charge-after-refund re-collection.
+- Corrected the architecture guide to state that a late charge after refund re-deducts the reserved amount when possible instead of no-oping after refund.
 - Normalized the Apache 2.0 `LICENSE` wording to the canonical BabySea OSS format used across public packages.
 - Re-validated `ledger-fortress` against BabySea's production payment and credit implementation across Supabase schemas, the inference credit service, billing webhooks, generation cleanup, and team billing guards.
 - Narrowed the documented OSS contract to the BabySea-derived Stripe + Supabase lifecycle: `add_credits`, `reserve_credits`, `charge_credits`, `refund_credits`, low-balance alerts, crash recovery, and backend-only Supabase security boundaries.
@@ -45,6 +49,8 @@ All notable changes to `ledger-fortress` will be documented here. The format fol
 
 - Confirmed BabySea production uses additive Stripe invoice/checkout credit grants, pre-generation reserve, success charge confirmation, failure/cancel/cleanup refund, low-balance alerts, and scheduled stale-generation cleanup.
 - Confirmed BabySea production does not implement the removed advanced refund/dispute or debt-tracking flows, so they are intentionally outside this OSS surface.
+- Re-checked the OSS surface on 2026-05-07 against BabySea's Supabase credit schema, credit alert schema, inference credit service, Stripe billing webhook, generation cleanup, user cancel flow, and team credit-pack subscription guard; docs now explicitly separate real BabySea flows from OSS portability helpers.
+- Re-ran ledger-fortress validation on 2026-05-07: TypeScript Vitest suite, TypeScript `tsc --noEmit`, TypeScript package build, edited-file diagnostics, and verification-script shell syntax checks.
 - Ran TypeScript lint, Vitest, build, package dry-run, and shell syntax checks for verification scripts.
 - Ran the real-stack smoke harness against Stripe test mode and Supabase on 2026-05-06. Result: disposable Stripe customer created/deleted, disposable Supabase schema applied/dropped, migrations loaded, additive grants, reserve, charge, refund, duplicate idempotency, low-balance alerts, RLS, and client-role grant posture validated with 52 assertions.
 
@@ -80,7 +86,7 @@ All notable changes to `ledger-fortress` will be documented here. The format fol
 ### Changed
 
 - Late success callbacks after refund now attempt to re-deduct the reserved amount atomically before logging success; if the balance cannot cover it, `charge_credits` returns `FALSE` for application review.
-- Stripe custom credit resolvers run even when Stripe reports a zero amount, supporting fixed-credit plans, discounts, trials, and enterprise contracts.
+- Stripe custom credit resolvers run before the default amount-paid fallback so adopters can explicitly use `plans.tokens` for fixed-credit Stripe Price IDs without changing the supported Stripe event set.
 - Ledger amount inputs are rejected when they exceed the supported three-decimal scale or `NUMERIC(10,3)` range instead of being silently rounded or surfacing database overflow errors.
 
 ### Validated

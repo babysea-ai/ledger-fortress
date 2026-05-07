@@ -42,7 +42,7 @@ Use `STRIPE_WEBHOOK_SECRET` for signature verification. The webhook helper does 
 
 ### 1. Configure your plans
 
-Map your Stripe Price IDs to credit allocations:
+Map your Stripe Price IDs to credit allocations when your app needs plan-based grants or plan-aware UI. The default credit grant path does not require this lookup; it mirrors BabySea's current production webhook behavior by using the paid Stripe amount.
 
 ```sql
 INSERT INTO plans (name, variant_id, tokens) VALUES
@@ -76,18 +76,6 @@ const handler = createStripeWebhookHandler({
       where: { stripeCustomerId: customerId },
     });
     return account?.id ?? null;
-  },
-  // Optional: use get_plan_credits()/plans.tokens instead of amount_paid/100.
-  resolveInvoiceCredits: async (invoice) => {
-    const line = (invoice.lines as { data?: Array<{ price?: { id?: string } }> } | undefined)?.data?.[0];
-    const priceId = line?.price?.id;
-    return priceId ? fortress.getPlanCredits(priceId) : null;
-  },
-  // Optional: same idea for fixed-credit one-time packs.
-  resolveCheckoutCredits: async (session) => {
-    const line = (session.line_items as { data?: Array<{ price?: { id?: string } }> } | undefined)?.data?.[0];
-    const priceId = line?.price?.id;
-    return priceId ? fortress.getPlanCredits(priceId) : null;
   },
   // Optional: guard credit pack purchases
   hasActiveSubscription: async (accountId) => {
@@ -123,7 +111,7 @@ The webhook handler processes BabySea-derived credit-grant events. In production
 Triggered when a subscription is created, renewed, or updated. The handler:
 
 1. Extracts `amount_paid` from the invoice (cents)
-2. Converts to credits (`amount/100`, since 1 credit = $1) by default, or calls `resolveInvoiceCredits` if provided. Custom resolvers run even when `amount_paid` is zero.
+2. Converts to credits (`amount/100`, since 1 credit = $1) by default, or calls `resolveInvoiceCredits` if your app has explicitly configured a plan-based resolver.
 3. Calls `add_credits()` with idempotency key `invoice:{invoiceId}`
 4. Resets any credit alert thresholds that are now above balance
 
@@ -136,7 +124,7 @@ Triggered when a customer completes a one-time purchase (credit pack). The handl
 1. Checks that the session mode is `payment` (not `subscription`)
 2. Requires `payment_status === 'paid'` when Stripe includes that field
 3. Optionally verifies the account has an active subscription (prevents stale checkout)
-4. Converts `amount_total` to credits by default, or calls `resolveCheckoutCredits` if provided. Custom resolvers run even when `amount_total` is zero.
+4. Converts `amount_total` to credits by default, or calls `resolveCheckoutCredits` if your app has explicitly configured a plan-based resolver.
 5. Calls `add_credits()` with idempotency key `order:{paymentIntentId}`
 
 For asynchronous payment methods, also subscribe to `checkout.session.async_payment_succeeded`; it runs through the same paid checkout handler.
@@ -150,7 +138,9 @@ Every `add_credits` call uses a unique idempotency key derived from the Stripe o
 | Event | Idempotency key |
 |---|---|
 | `invoice.paid` | `invoice:inv_xxx` |
-| `checkout.session.completed` | `order:pi_xxx` |
+| `checkout.session.completed` | `order:pi_xxx` or `order:cs_xxx` |
+
+BabySea production derives the checkout grant key from its internal order ID. The OSS helper uses Stripe's payment intent when present, otherwise the checkout session ID, because those IDs are available in a standalone Stripe integration.
 
 The `idx_credit_ledger_add_idempotent` unique partial index ensures that even if Stripe retries the webhook 10 times, credits are granted exactly once.
 
@@ -176,8 +166,25 @@ Credits never reset. This is critical for credit pack purchases - a user who buy
 
 ## Amount-based vs plan-based grants
 
-The default handler grants credits from the amount Stripe says was actually paid. This matches products where `1 credit = $1 paid` and handles discounts, prorations, and taxes according to the final Stripe amount.
+The default handler grants credits from the amount Stripe says was actually paid. This is the BabySea-derived path: subscription invoices use `amount_paid/100`, credit-pack checkouts use `amount_total/100`, and non-positive amounts do not create credits.
 
 If your product grants a fixed number of credits per Stripe Price ID, use `resolveInvoiceCredits` or `resolveCheckoutCredits` and look up `plans.tokens` through the hardened `get_plan_credits()` boundary with `fortress.getPlanCredits(priceId)`. Return `null` to skip allocation when the event does not contain the price metadata you require.
 
-Custom resolvers are evaluated before the default amount-based fallback, so fixed-credit plans still work for 100% discounts, trials, migration credits, or custom enterprise contracts where the Stripe amount can be zero.
+Those resolvers are evaluated before the default amount-based fallback so adopters can deliberately choose plan-based grants. They do not add new Stripe event types, refund/dispute deductions, debt tracking, or a generic payment abstraction.
+
+```typescript
+const handler = createStripeWebhookHandler({
+  fortress,
+  resolveAccountId,
+  resolveInvoiceCredits: async (invoice) => {
+    const line = (invoice.lines as { data?: Array<{ price?: { id?: string } }> } | undefined)?.data?.[0];
+    const priceId = line?.price?.id;
+    return priceId ? fortress.getPlanCredits(priceId) : null;
+  },
+  resolveCheckoutCredits: async (session) => {
+    const line = (session.line_items as { data?: Array<{ price?: { id?: string } }> } | undefined)?.data?.[0];
+    const priceId = line?.price?.id;
+    return priceId ? fortress.getPlanCredits(priceId) : null;
+  },
+});
+```

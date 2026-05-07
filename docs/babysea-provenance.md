@@ -7,7 +7,7 @@ The grounding was validated against BabySea's internal production implementation
 - Credit schema (plans, credits, credit_ledger, `reserve_credits`, `charge_credits`, `refund_credits`, `add_credits`, and ledger idempotency indexes).
 - Credit alert schema (low-balance alert settings and fired-threshold deduplication).
 - Credit service module (request-time reserve, charge confirmation, refund, and alert reset/check calls).
-- Billing webhook handler (Stripe `invoice.paid` and `checkout.session.completed` reconciliation into `add_credits` with `invoice:*` and `order:*` idempotency keys).
+- Billing webhook handler (Stripe `invoice.paid` and `checkout.session.completed` reconciliation into `add_credits` with `invoice:*` and `order:*` idempotency keys, using the paid Stripe amount by default).
 - Cleanup service and cron handler (scheduled crash cleanup that marks stale pending generations failed and refunds reserved credits).
 - Team billing service plus the billing webhook stale-session check for credit-pack active-subscription guards.
 
@@ -24,6 +24,16 @@ The grounding was validated against BabySea's internal production implementation
 | Low-balance alerts | Fire once per threshold descent, re-arm after top-up/refund | `check_credit_alerts()` and `reset_credit_alerts()` |
 | Stale checkout guard | Credit pack redemption is guarded at webhook time, not only checkout creation time | `hasActiveSubscription` callback |
 | Security boundary | Credit tables are backend-owned financial state, not client-writable cache | Supabase RLS, backend/service-role calls, `SECURITY DEFINER`, locked `search_path` |
+
+## OSS generalizations over BabySea-specific tables
+
+The OSS package removes BabySea-specific account, subscription, order, file asset, and dashboard schemas. These helpers are included only where they preserve an invariant BabySea already operates:
+
+| OSS helper | Production grounding | Why it exists in OSS |
+|---|---|---|
+| `get_plan_credits()` | BabySea stores Stripe Price IDs and credit allocations in `plans`; production app code also reads `plans` directly for billing/plan behavior. | Standalone adopters may not have BabySea's app loaders, so the helper exposes a hardened plan lookup over the same table pattern. |
+| `find_orphaned_reservations()` | BabySea cleanup queries stale `file_assets`, checks for an existing `reserve` ledger row, marks work failed, and calls `refund_credits()`. | Standalone adopters may use different job tables, so the helper finds ledger-level orphan reservations that can be refunded safely. |
+| Charge-after-refund re-collection | BabySea guards cancel/cleanup/status races in application code before refunding and keeps charge/refund idempotency in SQL. | Without BabySea's `file_assets` status gate, the OSS SQL preserves the same economic invariant by re-deducting before a late charge is logged. |
 
 ## Explicitly not included
 

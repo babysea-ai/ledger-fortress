@@ -76,7 +76,7 @@ events safe at the database boundary.
 
 ## What this is
 
-`ledger-fortress` is an open-source credit ledger inspired by the core invariants used in [BabySea](https://babysea.ai)'s production credit system: atomic reserve ➜ charge ➜ refund, additive Stripe grants, database-enforced idempotency, low-balance alert state, and crash recovery for async AI generations. The OSS package packages that pattern for teams building on **Stripe + Supabase**.
+`ledger-fortress` is a production-grade open-source credit ledger inspired by the core invariants used in [BabySea](https://babysea.ai)'s real Stripe + Supabase credit system: atomic reserve ➜ charge ➜ refund, additive Stripe grants, database-enforced idempotency, low-balance alert state, stale-generation cleanup, and backend-only Supabase security boundaries. The OSS package adapts that proven pattern for teams building on **Stripe + Supabase**.
 
 **30-second version:** AI generation billing is hard because work is async. You
 must reserve before dispatch, charge on success, refund on failure, survive
@@ -86,8 +86,10 @@ lifecycle with Stripe + Supabase/Postgres.
 **Deliberate boundary:** `ledger-fortress` grants credits from paid Stripe
 invoice and checkout events. It does not automatically claw back credits for
 Stripe refunds, disputes, chargebacks, uncollectible invoices, or support-driven
-adjustments. Keep those payment workflows in your billing/support system unless
+deductions. Keep those payment workflows in your billing/support system unless
 you implement and validate an explicit extension.
+
+**Grounding rule:** public OSS behavior is limited to flows BabySea actually operates: Stripe subscription invoices, Stripe one-time credit-pack checkouts, Supabase `credits`/`credit_ledger`, reserve-before-dispatch, charge-on-success, refund-on-failure/cancel/cleanup, low-balance alert state, and service-role/backend-only mutation access. Where the OSS uses a different helper name or removes BabySea-specific tables, the underlying invariant maps back to those production paths.
 
 For the exact split between BabySea-mirrored behavior and OSS-generalized extensions, see [`docs/babysea-provenance.md`](docs/babysea-provenance.md).
 
@@ -408,11 +410,6 @@ const handler = createStripeWebhookHandler({
     // Map Stripe customer to your account ID
     return db.accounts.findByStripeCustomer(customerId);
   },
-  resolveInvoiceCredits: async (invoice) => {
-    // Optional: override amount_paid/100 with get_plan_credits() lookup
-    const priceId = invoice.lines?.data?.[0]?.price?.id;
-    return priceId ? fortress.getPlanCredits(priceId) : null;
-  },
 });
 
 // Next.js App Router example (raw body required for signature verification)
@@ -427,12 +424,12 @@ export async function POST(req: Request) {
 // Handles:
 // - invoice.paid               (subscription renewal, idempotent via invoice ID)
 // - checkout.session.completed/async_payment_succeeded
-//                              (paid credit pack purchase, idempotent via order ID)
+//                              (paid credit pack purchase, idempotent via payment intent/session ID)
 ```
 
 ### Plans configuration
 
-If you grant fixed credits by Stripe Price ID, map those IDs to credit allocations:
+BabySea stores Stripe Price IDs in a Supabase `plans` table. The OSS keeps that table so your backend can map Stripe prices to credit allocations when your product policy needs plan-based grants or plan-aware UI:
 
 ```sql
 INSERT INTO plans (name, variant_id, tokens) VALUES
@@ -444,7 +441,7 @@ INSERT INTO plans (name, variant_id, tokens) VALUES
 
 Credits are **additive** (rollover, never reset). A Pro subscriber who buys a $10 credit pack gets $39 total, not $29.
 
-By default, the Stripe helper grants credits from the amount Stripe reports as paid (`amount_paid/100` or `amount_total/100`). Use `resolveInvoiceCredits` or `resolveCheckoutCredits` when you want `get_plan_credits()`/`plans.tokens` or another custom allocation rule instead. Custom resolvers run even when Stripe reports a zero amount, which supports fixed-credit plans, discounts, trials, and custom enterprise billing rules.
+By default, the Stripe helper mirrors BabySea's current grant path: it grants credits from the amount Stripe reports as paid (`amount_paid/100` for subscription invoices or `amount_total/100` for credit-pack checkouts) and skips non-positive amounts. Use `resolveInvoiceCredits` or `resolveCheckoutCredits` only when your own Stripe Price ID policy explicitly maps to fixed credits in `plans.tokens`; those resolvers are a portable helper over the real `plans` table pattern, not a new payment workflow.
 
 ## Stripe refund and dispute boundary
 
@@ -528,7 +525,7 @@ Before going live with real Stripe payments:
 - [ ] Use a direct connection for migrations and a transaction-mode pooler (PgBouncer or PostgREST/Supavisor in transaction mode) for runtime. On Supabase specifically, that means session pooler (port 5432) for migrations and transaction pooler (port 6543) for runtime.
 - [ ] Set `STRIPE_WEBHOOK_SECRET` from your Stripe webhook endpoint (not your API key)
 - [ ] Schedule `recoverOrphans()` every 5 minutes via cron
-- [ ] Map Stripe Price IDs into the `plans` table before enabling subscriptions
+- [ ] Map Stripe Price IDs into the `plans` table before using plan-based grants or plan-aware billing UI
 - [ ] Configure alert thresholds per account before exposing low-balance UI
 - [ ] Cap `pg.Pool` connection limits well below your Supabase connection cap (Supabase tiers cap at 60-500 depending on plan; default SDK setting is `max: 10`)
 - [ ] Restrict your Stripe API key to the [permissions listed in `docs/stripe-integration.md`](docs/stripe-integration.md)
@@ -538,9 +535,9 @@ For a proof-oriented map from invariants to SQL mechanisms, see [`docs/INVARIANT
 
 ## Status
 
-`ledger-fortress` is a **working OSS primitive** (v0.1.2). The reserve ➜ charge ➜ refund core mirrors [BabySea](https://babysea.ai)'s production credit lifecycle approach for 80+ AI models across 12+ labs. This repo packages and generalizes those credit ledger invariants for community Stripe + Supabase deployments. See [`CHANGELOG.md`](CHANGELOG.md).
+`ledger-fortress` is a **production-grade working OSS primitive** (v0.1.2). The reserve ➜ charge ➜ refund core mirrors [BabySea](https://babysea.ai)'s production credit lifecycle approach for 80+ AI models across 12+ labs. This repo packages and generalizes those credit ledger invariants for community Stripe + Supabase deployments. See [`CHANGELOG.md`](CHANGELOG.md).
 
-The package is still v0.x, so SQL migration shape, SQL function signatures, SDK APIs, package publishing, and deployment verification flow can evolve before a 1.0 promise. That is separate from invariant confidence: the current v0.1 surface below is documented, tested, and real-stack smoke-validated.
+The ledger invariants are ready for production use when you apply all migrations, keep client roles outside the ledger, verify Stripe signatures, and run the deployment checks. The package is still v0.x, so distribution details such as package publishing and non-invariant SDK ergonomics can evolve before 1.0; that does not weaken the current Stripe + Supabase credit lifecycle guarantees below, which are documented, tested, and real-stack smoke-validated.
 
 Both the TypeScript and Python SDKs build. The TypeScript SDK ships with tests. Neither is published to npm/PyPI yet for 0.1; install from source or pin to a commit SHA.
 

@@ -17,7 +17,7 @@ This file maps the credit-ledger promises to the database mechanisms that enforc
 | A refund after charge does not return credits. | `refund_credits()` checks for existing `charge` and no-ops. | `refund_credits()` |
 | A duplicate refund restores credits at most once. | `idx_credit_ledger_refund_idempotent` unique partial index and unique-violation rollback. | `refund_credits()` |
 | Stripe invoice retries do not double-grant credits. | `idx_credit_ledger_add_idempotent` on `(account_id, description) WHERE type = 'add'`. | `add_credits()` |
-| Stripe checkout retries do not double-grant credits. | Checkout idempotency keys use the payment intent/order identifier in `description`. | `client/typescript/src/stripe.ts` |
+| Stripe checkout retries do not double-grant credits. | Checkout idempotency keys use the Stripe payment intent when present, otherwise the checkout session identifier, in `description`. | `client/typescript/src/stripe.ts` |
 | Grants are additive, never resets. | `add_credits()` uses `ON CONFLICT DO UPDATE SET tokens = credits.tokens + p_tokens`. | `add_credits()` |
 | Client roles cannot mutate ledger tables directly. | `003_security.sql` enables RLS and revokes anon/authenticated direct table access. | `migrations/003_security.sql` |
 | Mutating functions run through a hardened boundary. | Security migration marks functions `SECURITY DEFINER` and locks `search_path`. | `migrations/003_security.sql` |

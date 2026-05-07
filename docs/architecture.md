@@ -49,6 +49,8 @@ Stripe webhooks/provider webhooks/crash recovery cron
 | `credit_alert_settings` | one row per account | Threshold and channel configuration |
 | `credit_alert_log` | one row per threshold crossing | Deduplicates low-balance alerts |
 
+The `plans` table mirrors BabySea's Stripe Price ID mapping. The OSS `get_plan_credits()` helper is a portability wrapper around that table; the default Stripe grant path still follows BabySea's current amount-paid behavior.
+
 ## The guarantees
 
 ### 1. Atomic balance changes
@@ -98,7 +100,7 @@ reserved ➜ refunded
 ```
 
 - `refund_credits` no-ops if the generation is already charged.
-- `charge_credits` re-checks prior refund state under lock and no-ops after refund.
+- `charge_credits` re-checks prior refund state under lock; if a refund already returned the reservation, it re-deducts the reserved amount before logging charge, or returns `FALSE` if it cannot safely collect.
 - `charge_credits` and `refund_credits` require a matching `reserve` row for the same account and generation.
 - `FOR UPDATE` serialization prevents conflicting outcomes for the same generation.
 
