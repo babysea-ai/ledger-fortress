@@ -196,15 +196,15 @@ export class LedgerFortress {
       'SELECT get_plan_credits($1) AS get_plan_credits',
       [variantId],
     );
-    const tokens = result.rows[0]?.get_plan_credits;
-    return tokens === null || tokens === undefined ? null : parseFloat(tokens);
+    const credits = result.rows[0]?.get_plan_credits;
+    return credits === null || credits === undefined ? null : parseFloat(credits);
   }
 
   /**
    * Atomically reserve credits for a generation.
    * Returns true if the reservation succeeded, false if insufficient balance.
    *
-   * This is a single `UPDATE ... WHERE tokens >= cost` - no TOCTOU race.
+   * This is a single `UPDATE ... WHERE credits >= cost` - no TOCTOU race.
    */
   async reserve(input: ReserveInput): Promise<boolean> {
     assertCreditAmount(input.amount);

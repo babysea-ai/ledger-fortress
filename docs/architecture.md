@@ -44,7 +44,7 @@ Stripe webhooks/provider webhooks/crash recovery cron
 | Table | Grain | Purpose |
 |---|---|---|
 | `plans` | one row per Stripe price | Maps price IDs to credit grants |
-| `credits` | one row per account | Current spendable balance with `CHECK (tokens >= 0)` |
+| `credits` | one row per account | Current spendable balance with `CHECK (credits >= 0)` |
 | `credit_ledger` | immutable event log | Reserve/charge/refund/add entries |
 | `credit_alert_settings` | one row per account | Threshold and channel configuration |
 | `credit_alert_log` | one row per threshold crossing | Deduplicates low-balance alerts |
@@ -60,10 +60,10 @@ Every balance mutation is one SQL statement. No application lock, no distributed
 ```sql
 -- reserve_credits: atomic check-and-deduct
 UPDATE credits
-SET tokens = tokens - p_tokens
+SET credits = credits - p_credits
 WHERE account_id = p_account_id
-  AND tokens >= p_tokens
-RETURNING tokens;
+  AND credits >= p_credits
+RETURNING credits;
 ```
 
 If two requests race, PostgreSQL, as Supabase's SQL engine, serializes the row updates. The second request sees the new balance and fails cleanly if there is not enough left.

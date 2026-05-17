@@ -4,10 +4,22 @@ All notable changes to `ledger-fortress` will be documented here. The format fol
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-05-17
+
+### Security
+
+- Hardened `scripts/sentry-project-check.mjs` with normalized config parsing, HTTPS-only Sentry URL validation except localhost, bounded retry handling, strict Sentry API response-shape checks, stronger secret redaction, and stackless failure output. No runtime Sentry SDK, DSN, or telemetry is added.
+
+### Changed
+
+- Bumped TypeScript and Python SDK packages from `0.1.0` to `0.1.1`.
+
 ## [0.1.0] - 2026-05-08
 
 ### Added
 
+- Documented the `tokens → credits` rename from BabySea internals in `docs/babysea-provenance.md`, including a column, parameter, and SDK field mapping table so adopters familiar with the BabySea internal naming can map cleanly to the OSS surface.
+- Documented the SQL-level hardening additions (`lf_validate_credit_amount`, `CHECK (amount > 0)` on `credit_ledger`, reserve idempotency index, reserve-row precondition for charge/refund, amount-equality enforcement, and `FOR UPDATE` lock in charge/refund) in `docs/babysea-provenance.md`, with the production application-layer equivalent for each.
 - Added `BabySea OSS taxonomy` in `README.md`.
 - Fix table formatting in `README.md`.
 - Added shared BabySea OSS architecture framing, 30-second summary, deliberate Stripe refund/dispute boundary, invariant-first README links, and a formal `docs/INVARIANTS.md` proof map.
@@ -67,7 +79,7 @@ All notable changes to `ledger-fortress` will be documented here. The format fol
 - README architecture section now uses an inline text diagram instead of a CDN-hosted image.
 - Replaced the unrelated roadmap with the current validated v0.1 surface.
 - Late success callbacks after refund now attempt to re-deduct the reserved amount atomically before logging success; if the balance cannot cover it, `charge_credits` returns `FALSE` for application review.
-- Stripe custom credit resolvers run before the default amount-paid fallback so adopters can explicitly use `plans.tokens` for fixed-credit Stripe Price IDs without changing the supported Stripe event set.
+- Stripe custom credit resolvers run before the default amount-paid fallback so adopters can explicitly use `plans.credits` for fixed-credit Stripe Price IDs without changing the supported Stripe event set.
 - Ledger amount inputs are rejected when they exceed the supported three-decimal scale or `NUMERIC(10,3)` range instead of being silently rounded or surfacing database overflow errors.
 
 ### Removed

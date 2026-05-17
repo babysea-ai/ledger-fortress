@@ -45,7 +45,7 @@ Use `STRIPE_WEBHOOK_SECRET` for signature verification. The webhook helper does 
 Map your Stripe Price IDs to credit allocations when your app needs plan-based grants or plan-aware UI. The default credit grant path does not require this lookup; it mirrors BabySea's current production webhook behavior by using the paid Stripe amount.
 
 ```sql
-INSERT INTO plans (name, variant_id, tokens) VALUES
+INSERT INTO plans (name, variant_id, credits) VALUES
   ('Starter Monthly',    'price_1Abc...', 9.000),
   ('Starter Yearly',     'price_1Def...', 90.000),
   ('Pro Monthly',        'price_1Ghi...', 29.000),
@@ -168,7 +168,7 @@ Credits never reset. This is critical for credit pack purchases - a user who buy
 
 The default handler grants credits from the amount Stripe says was actually paid. This is the BabySea-derived path: subscription invoices use `amount_paid/100`, credit-pack checkouts use `amount_total/100`, and non-positive amounts do not create credits.
 
-If your product grants a fixed number of credits per Stripe Price ID, use `resolveInvoiceCredits` or `resolveCheckoutCredits` and look up `plans.tokens` through the hardened `get_plan_credits()` boundary with `fortress.getPlanCredits(priceId)`. Return `null` to skip allocation when the event does not contain the price metadata you require.
+If your product grants a fixed number of credits per Stripe Price ID, use `resolveInvoiceCredits` or `resolveCheckoutCredits` and look up `plans.credits` through the hardened `get_plan_credits()` boundary with `fortress.getPlanCredits(priceId)`. Return `null` to skip allocation when the event does not contain the price metadata you require.
 
 Those resolvers are evaluated before the default amount-based fallback so adopters can deliberately choose plan-based grants. They do not add new Stripe event types, refund/dispute deductions, debt tracking, or a generic payment abstraction.
 

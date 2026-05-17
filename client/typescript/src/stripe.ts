@@ -191,7 +191,7 @@ async function handleInvoicePaid(
   }
 
   // Convert cents to credits (1 credit = $1 = 100 cents) unless the adopter
-  // supplies a custom resolver for plan-token mapping or non-USD products.
+  // supplies a custom resolver for plan-credits mapping or non-USD products.
   const resolvedCredits = opts.resolveInvoiceCredits
     ? await opts.resolveInvoiceCredits(invoice)
     : typeof amountPaid === 'number' && amountPaid > 0

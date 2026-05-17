@@ -88,7 +88,7 @@ DECLARE
   v_threshold  NUMERIC;
 BEGIN
   -- Get current balance
-  SELECT tokens INTO v_balance
+  SELECT credits INTO v_balance
   FROM credits
   WHERE account_id = p_account_id;
 
@@ -152,7 +152,7 @@ DECLARE
   v_balance NUMERIC;
   v_deleted INT;
 BEGIN
-  SELECT tokens INTO v_balance
+  SELECT credits INTO v_balance
   FROM credits
   WHERE account_id = p_account_id;
 

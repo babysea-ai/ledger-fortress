@@ -35,6 +35,35 @@ The OSS package removes BabySea-specific account, subscription, order, file asse
 | `find_orphaned_reservations()` | BabySea cleanup queries stale `file_assets`, checks for an existing `reserve` ledger row, marks work failed, and calls `refund_credits()`. | Standalone adopters may use different job tables, so the helper finds ledger-level orphan reservations that can be refunded safely. |
 | Charge-after-refund re-collection | BabySea guards cancel/cleanup/status races in application code before refunding and keeps charge/refund idempotency in SQL. | Without BabySea's `file_assets` status gate, the OSS SQL preserves the same economic invariant by re-deducting before a late charge is logged. |
 
+## Naming differences from BabySea internals
+
+The OSS package renames the spendable balance unit from `tokens` to `credits` to match the public-facing concept ("1 credit = $1") and to avoid confusion with LLM tokens.
+
+| Surface | BabySea internal name | OSS name |
+|---|---|---|
+| Balance column | `credits.tokens` | `credits.credits` |
+| Plan allocation column | `plans.tokens` | `plans.credits` |
+| Ledger amount column | `credit_ledger.amount` | `credit_ledger.amount` (unchanged) |
+| RPC parameter | `p_tokens` | `p_credits` |
+| SDK field | `tokens` | `credits` |
+
+The economic invariant, precision (`NUMERIC(10,3)`), idempotency indexes, ledger types (`reserve / charge / refund / add`), and function names (`reserve_credits`, `charge_credits`, `refund_credits`, `add_credits`) are unchanged.
+
+## Hardening additions on top of the BabySea invariants
+
+The OSS package adds defensive checks at the SQL boundary that BabySea relies on application-layer services (`cost/service.ts`, `cleanup-service.ts`, the request validation layer) to enforce. They preserve every BabySea invariant and are safe additions for standalone adopters who do not have those layers.
+
+| OSS hardening | What it adds | BabySea equivalent today |
+|---|---|---|
+| `lf_validate_credit_amount()` | Rejects amounts with more than 3 decimal places, non-positive amounts, and amounts above `9,999,999.999`. | Application-side cost service computes a validated `NUMERIC(10,3)` amount before any RPC call. |
+| `CHECK (amount > 0)` on `credit_ledger` | SQL-level guard against zero or negative ledger rows. | Application skips zero/negative `amount_paid` invoices in the billing webhook handler. |
+| `UNIQUE (generation_id) WHERE type='reserve'` | Reserve idempotency at the SQL level; second reserve for the same generation is a safe no-op when the account/amount match. | Application controls retries; production does not enforce this in SQL today. |
+| `charge_credits` / `refund_credits` require a matching `reserve` row | A terminal event for an unreserved generation raises instead of silently mutating balance. | Application sequencing ensures a reserve always precedes terminal events. |
+| Amount equality between reserve and charge/refund | Charge or refund with an amount different from the prior reserve raises. | Application passes the reserved amount through; production does not enforce equality in SQL. |
+| `PERFORM 1 FROM credits FOR UPDATE` in charge/refund | Serializes the charge↔refund race under READ COMMITTED isolation. | Application sequencing reduces this race; SQL-level lock removes it entirely for OSS adopters. |
+
+These additions never change the customer-facing economic invariant. They make the SQL surface safe for adopters who call the functions directly without BabySea's pre-validation layers.
+
 ## Explicitly not included
 
 These flows are not present in BabySea's current credit implementation and are intentionally not part of this OSS package:

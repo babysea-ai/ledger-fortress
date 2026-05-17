@@ -58,7 +58,7 @@ async function main(): Promise<void> {
   const expectedSuccesses = Math.min(attempts, Math.floor(initialBalance / amount));
 
   try {
-    await pool.query('insert into credits (account_id, tokens) values ($1, $2)', [accountId, initialBalance]);
+    await pool.query('insert into credits (account_id, credits) values ($1, $2)', [accountId, initialBalance]);
 
     const results = await Promise.all(
       Array.from({ length: attempts }, (_, index) =>

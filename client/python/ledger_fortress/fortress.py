@@ -173,7 +173,7 @@ class LedgerFortress:
         Atomically reserve credits for a generation.
 
         Returns True if the reservation succeeded, False if insufficient balance.
-        This is a single UPDATE ... WHERE tokens >= cost - no TOCTOU race.
+        This is a single UPDATE ... WHERE credits >= cost - no TOCTOU race.
         """
         _assert_credit_amount(amount)
         result = self._query_scalar(

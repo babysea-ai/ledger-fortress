@@ -6,7 +6,7 @@ This file maps the credit-ledger promises to the database mechanisms that enforc
 
 | Invariant | Mechanism | Where to verify |
 |---|---|---|
-| Balance is never negative. | `credits.tokens CHECK (tokens >= 0)` plus `reserve_credits()` atomic `UPDATE ... WHERE tokens >= amount`. | `migrations/001_credits.sql` |
+| Balance is never negative. | `credits.credits CHECK (credits >= 0)` plus `reserve_credits()` atomic `UPDATE ... WHERE credits >= amount`. | `migrations/001_credits.sql` |
 | A reserve deducts at most once per generation. | `idx_credit_ledger_reserve_idempotent` unique partial index and idempotent retry branch in `reserve_credits()`. | `migrations/001_credits.sql` |
 | A successful reserve deducts exactly the reserved amount. | `lf_validate_credit_amount()` rejects invalid precision; `reserve_credits()` records the same amount in `credit_ledger`. | `migrations/001_credits.sql` |
 | A duplicate reserve response is safe. | Existing reserve lookup returns success for the same account/amount and rejects amount conflicts. | `reserve_credits()` |
@@ -18,7 +18,7 @@ This file maps the credit-ledger promises to the database mechanisms that enforc
 | A duplicate refund restores credits at most once. | `idx_credit_ledger_refund_idempotent` unique partial index and unique-violation rollback. | `refund_credits()` |
 | Stripe invoice retries do not double-grant credits. | `idx_credit_ledger_add_idempotent` on `(account_id, description) WHERE type = 'add'`. | `add_credits()` |
 | Stripe checkout retries do not double-grant credits. | Checkout idempotency keys use the Stripe payment intent when present, otherwise the checkout session identifier, in `description`. | `client/typescript/src/stripe.ts` |
-| Grants are additive, never resets. | `add_credits()` uses `ON CONFLICT DO UPDATE SET tokens = credits.tokens + p_tokens`. | `add_credits()` |
+| Grants are additive, never resets. | `add_credits()` uses `ON CONFLICT DO UPDATE SET credits = credits.credits + p_credits`. | `add_credits()` |
 | Client roles cannot mutate ledger tables directly. | `003_security.sql` enables RLS and revokes anon/authenticated direct table access. | `migrations/003_security.sql` |
 | Mutating functions run through a hardened boundary. | Security migration marks functions `SECURITY DEFINER` and locks `search_path`. | `migrations/003_security.sql` |
 | Crash recovery cannot double-refund. | `find_orphaned_reservations()` only returns reservations without terminal rows; `refund_credits()` remains idempotent. | `migrations/001_credits.sql` |

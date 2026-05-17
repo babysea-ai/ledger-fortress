@@ -454,7 +454,7 @@ async function main() {
 
     // Insert plan into DB
     await fortress['pool'].query(
-      `INSERT INTO plans (name, variant_id, tokens) VALUES ($1, $2, $3)`,
+      `INSERT INTO plans (name, variant_id, credits) VALUES ($1, $2, $3)`,
       ['Pro Monthly', price.id, 29.0],
     );
 
@@ -523,7 +523,7 @@ async function main() {
     });
 
     await fortress['pool'].query(
-      `INSERT INTO plans (name, variant_id, tokens) VALUES ($1, $2, $3)`,
+      `INSERT INTO plans (name, variant_id, credits) VALUES ($1, $2, $3)`,
       ['Credit Pack $10', packPrice.id, 10.0],
     );
 
@@ -555,7 +555,7 @@ async function main() {
 
     // Set balance to exactly $1
     await fortress['pool'].query(
-      `UPDATE credits SET tokens = 1.000 WHERE account_id = $1`,
+      `UPDATE credits SET credits = 1.000 WHERE account_id = $1`,
       [testAccountId],
     );
     const balBeforeConcurrent = await fortress.getBalance(testAccountId);

@@ -22,12 +22,12 @@ CREATE TABLE IF NOT EXISTS plans (
   id          SERIAL PRIMARY KEY,
   name        TEXT NOT NULL,
   variant_id  TEXT NOT NULL UNIQUE,            -- Stripe Price ID
-  tokens      NUMERIC(10, 3) NOT NULL          -- credits granted per invoice
+  credits      NUMERIC(10, 3) NOT NULL          -- credits granted per invoice
 );
 
 COMMENT ON TABLE plans IS 'Maps Stripe Price IDs to credit allocations. 1 credit = $1.';
 COMMENT ON COLUMN plans.variant_id IS 'Stripe Price ID (e.g. price_xxx).';
-COMMENT ON COLUMN plans.tokens IS 'Credits granted when this plan is purchased or renewed.';
+COMMENT ON COLUMN plans.credits IS 'Credits granted when this plan is purchased or renewed.';
 
 -- ============================================================================
 -- TABLE: credits
@@ -37,8 +37,8 @@ COMMENT ON COLUMN plans.tokens IS 'Credits granted when this plan is purchased o
 
 CREATE TABLE IF NOT EXISTS credits (
   account_id  UUID PRIMARY KEY,                -- FK to your accounts table
-  tokens      NUMERIC(10, 3) NOT NULL DEFAULT 0
-                CHECK (tokens >= 0),           -- overdraw protection
+  credits      NUMERIC(10, 3) NOT NULL DEFAULT 0
+                CHECK (credits >= 0),           -- overdraw protection
   updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -145,35 +145,35 @@ $$;
 COMMENT ON FUNCTION lf_validate_credit_amount IS 'Internal helper: rejects ledger amounts with more than 3 decimal places.';
 
 -- ============================================================================
--- FUNCTION: has_credits(account_id, tokens)
--- Pure check, no side effects. Returns TRUE if the account can afford `tokens`.
+-- FUNCTION: has_credits(account_id, credits)
+-- Pure check, no side effects. Returns TRUE if the account can afford `credits`.
 -- ============================================================================
 
 CREATE OR REPLACE FUNCTION has_credits(
   p_account_id UUID,
-  p_tokens     NUMERIC
+  p_credits     NUMERIC
 )
 RETURNS BOOLEAN
 LANGUAGE plpgsql
 STABLE
 AS $$
 BEGIN
-  IF p_tokens IS NULL OR p_tokens <= 0 OR p_tokens <> ROUND(p_tokens, 3) THEN
+  IF p_credits IS NULL OR p_credits <= 0 OR p_credits <> ROUND(p_credits, 3) THEN
     RETURN FALSE;
   END IF;
 
   RETURN (
-    SELECT tokens >= p_tokens
+    SELECT credits >= p_credits
     FROM credits
     WHERE account_id = p_account_id
   );
 END;
 $$;
 
-COMMENT ON FUNCTION has_credits IS 'Returns TRUE if the account has at least p_tokens credits.';
+COMMENT ON FUNCTION has_credits IS 'Returns TRUE if the account has at least p_credits credits.';
 
 -- ============================================================================
--- FUNCTION: reserve_credits(account_id, tokens, generation_id, model)
+-- FUNCTION: reserve_credits(account_id, credits, generation_id, model)
 --
 -- Atomically check and deduct credits in a single UPDATE. No separate SELECT.
 -- This eliminates TOCTOU race conditions entirely.
@@ -183,7 +183,7 @@ COMMENT ON FUNCTION has_credits IS 'Returns TRUE if the account has at least p_t
 
 CREATE OR REPLACE FUNCTION reserve_credits(
   p_account_id    UUID,
-  p_tokens        NUMERIC,
+  p_credits        NUMERIC,
   p_generation_id TEXT DEFAULT NULL,
   p_model         TEXT DEFAULT NULL
 )
@@ -195,7 +195,7 @@ DECLARE
   v_existing_account UUID;
   v_existing_amount NUMERIC;
 BEGIN
-  p_tokens := lf_validate_credit_amount(p_tokens, 'reserve_credits');
+  p_credits := lf_validate_credit_amount(p_credits, 'reserve_credits');
 
   -- Idempotent retry: if the caller already reserved this generation, report
   -- success without deducting again. This covers client/network retries after
@@ -208,8 +208,8 @@ BEGIN
     LIMIT 1;
 
     IF FOUND THEN
-      IF v_existing_account = p_account_id AND v_existing_amount <> p_tokens THEN
-        RAISE EXCEPTION 'reserve_credits: idempotency conflict for generation_id %; existing amount % does not match requested amount %', p_generation_id, v_existing_amount, p_tokens;
+      IF v_existing_account = p_account_id AND v_existing_amount <> p_credits THEN
+        RAISE EXCEPTION 'reserve_credits: idempotency conflict for generation_id %; existing amount % does not match requested amount %', p_generation_id, v_existing_amount, p_credits;
       END IF;
 
       RETURN v_existing_account = p_account_id;
@@ -217,13 +217,13 @@ BEGIN
   END IF;
 
   -- Single atomic UPDATE with WHERE guard.
-  -- If tokens < p_tokens, zero rows updated ➜ reservation fails.
+  -- If credits < p_credits, zero rows updated ➜ reservation fails.
   UPDATE credits
-  SET tokens = tokens - p_tokens,
+  SET credits = credits - p_credits,
       updated_at = NOW()
   WHERE account_id = p_account_id
-    AND tokens >= p_tokens
-  RETURNING tokens INTO v_new_balance;
+    AND credits >= p_credits
+  RETURNING credits INTO v_new_balance;
 
   IF NOT FOUND THEN
     RETURN FALSE;
@@ -232,13 +232,13 @@ BEGIN
   -- Log the reservation.
   BEGIN
     INSERT INTO credit_ledger (account_id, type, amount, balance_after, generation_id, model)
-    VALUES (p_account_id, 'reserve', p_tokens, v_new_balance, p_generation_id, p_model);
+    VALUES (p_account_id, 'reserve', p_credits, v_new_balance, p_generation_id, p_model);
   EXCEPTION WHEN unique_violation THEN
     -- Concurrent duplicate reserve won the race after our UPDATE. Roll back
     -- only this reserve's balance deduction, then return success if the
     -- existing reservation belongs to the same account.
     UPDATE credits
-    SET tokens = tokens + p_tokens,
+    SET credits = credits + p_credits,
         updated_at = NOW()
     WHERE account_id = p_account_id;
 
@@ -249,8 +249,8 @@ BEGIN
         AND type = 'reserve'
       LIMIT 1;
 
-      IF v_existing_account = p_account_id AND v_existing_amount <> p_tokens THEN
-        RAISE EXCEPTION 'reserve_credits: idempotency conflict for generation_id %; existing amount % does not match requested amount %', p_generation_id, v_existing_amount, p_tokens;
+      IF v_existing_account = p_account_id AND v_existing_amount <> p_credits THEN
+        RAISE EXCEPTION 'reserve_credits: idempotency conflict for generation_id %; existing amount % does not match requested amount %', p_generation_id, v_existing_amount, p_credits;
       END IF;
 
       RETURN v_existing_account = p_account_id;
@@ -266,7 +266,7 @@ $$;
 COMMENT ON FUNCTION reserve_credits IS 'Atomically deduct credits. Returns FALSE if balance insufficient.';
 
 -- ============================================================================
--- FUNCTION: charge_credits(account_id, tokens, generation_id, model)
+-- FUNCTION: charge_credits(account_id, credits, generation_id, model)
 --
 -- Confirms a reservation after successful generation.
 -- Usually log-only because credits were already deducted at reserve time.
@@ -277,7 +277,7 @@ COMMENT ON FUNCTION reserve_credits IS 'Atomically deduct credits. Returns FALSE
 
 CREATE OR REPLACE FUNCTION charge_credits(
   p_account_id    UUID,
-  p_tokens        NUMERIC,
+  p_credits        NUMERIC,
   p_generation_id TEXT,
   p_model         TEXT DEFAULT NULL
 )
@@ -292,7 +292,7 @@ BEGIN
   IF p_generation_id IS NULL THEN
     RAISE EXCEPTION 'charge_credits: generation_id is required';
   END IF;
-  p_tokens := lf_validate_credit_amount(p_tokens, 'charge_credits');
+  p_credits := lf_validate_credit_amount(p_credits, 'charge_credits');
 
   -- Serialize concurrent operations on the same account.
   -- Prevents the charge+refund race under READ COMMITTED isolation.
@@ -311,8 +311,8 @@ BEGIN
     RETURN FALSE;
   END IF;
 
-  IF p_tokens <> v_reserved_amount THEN
-    RAISE EXCEPTION 'charge_credits: amount % does not match reserved amount % for generation_id %', p_tokens, v_reserved_amount, p_generation_id;
+  IF p_credits <> v_reserved_amount THEN
+    RAISE EXCEPTION 'charge_credits: amount % does not match reserved amount % for generation_id %', p_credits, v_reserved_amount, p_generation_id;
   END IF;
 
   -- Fast path: already charged?
@@ -333,11 +333,11 @@ BEGIN
   IF v_already_refunded THEN
     -- Re-deduct: credits were returned by refund, but generation succeeded.
     UPDATE credits
-    SET tokens = tokens - v_reserved_amount,
+    SET credits = credits - v_reserved_amount,
         updated_at = NOW()
     WHERE account_id = p_account_id
-      AND tokens >= v_reserved_amount
-    RETURNING tokens INTO v_balance;
+      AND credits >= v_reserved_amount
+    RETURNING credits INTO v_balance;
 
     IF NOT FOUND THEN
       -- Insufficient balance to re-deduct after a prior refund. Do not mark
@@ -346,7 +346,7 @@ BEGIN
       RETURN FALSE;
     END IF;
   ELSE
-    SELECT tokens INTO v_balance FROM credits WHERE account_id = p_account_id;
+    SELECT credits INTO v_balance FROM credits WHERE account_id = p_account_id;
   END IF;
 
   -- Insert with unique_violation safety net (race between two concurrent charges).
@@ -357,7 +357,7 @@ BEGIN
     -- Concurrent duplicate. If we re-deducted, undo it.
     IF v_already_refunded THEN
       UPDATE credits
-      SET tokens = tokens + v_reserved_amount, updated_at = NOW()
+      SET credits = credits + v_reserved_amount, updated_at = NOW()
       WHERE account_id = p_account_id;
     END IF;
     RETURN FALSE;  -- concurrent duplicate, idempotent no-op
@@ -370,7 +370,7 @@ $$;
 COMMENT ON FUNCTION charge_credits IS 'Confirm a reservation. Re-deducts only when correcting a prior refund. Idempotent via unique index.';
 
 -- ============================================================================
--- FUNCTION: refund_credits(account_id, tokens, generation_id, model)
+-- FUNCTION: refund_credits(account_id, credits, generation_id, model)
 --
 -- Returns reserved credits to the account after a failed or cancelled generation.
 --
@@ -383,7 +383,7 @@ COMMENT ON FUNCTION charge_credits IS 'Confirm a reservation. Re-deducts only wh
 
 CREATE OR REPLACE FUNCTION refund_credits(
   p_account_id    UUID,
-  p_tokens        NUMERIC,
+  p_credits        NUMERIC,
   p_generation_id TEXT,
   p_model         TEXT DEFAULT NULL
 )
@@ -397,7 +397,7 @@ BEGIN
   IF p_generation_id IS NULL THEN
     RAISE EXCEPTION 'refund_credits: generation_id is required';
   END IF;
-  p_tokens := lf_validate_credit_amount(p_tokens, 'refund_credits');
+  p_credits := lf_validate_credit_amount(p_credits, 'refund_credits');
 
   -- Serialize concurrent operations on the same account.
   -- Prevents the charge+refund race under READ COMMITTED isolation.
@@ -416,8 +416,8 @@ BEGIN
     RETURN FALSE;
   END IF;
 
-  IF p_tokens <> v_reserved_amount THEN
-    RAISE EXCEPTION 'refund_credits: amount % does not match reserved amount % for generation_id %', p_tokens, v_reserved_amount, p_generation_id;
+  IF p_credits <> v_reserved_amount THEN
+    RAISE EXCEPTION 'refund_credits: amount % does not match reserved amount % for generation_id %', p_credits, v_reserved_amount, p_generation_id;
   END IF;
 
   -- Guard 1: If already charged, do NOT refund.
@@ -439,10 +439,10 @@ BEGIN
 
   -- Return credits to the balance.
   UPDATE credits
-  SET tokens = tokens + v_reserved_amount,
+  SET credits = credits + v_reserved_amount,
       updated_at = NOW()
   WHERE account_id = p_account_id
-  RETURNING tokens INTO v_new_balance;
+  RETURNING credits INTO v_new_balance;
 
   IF NOT FOUND THEN
     RETURN FALSE;
@@ -455,7 +455,7 @@ BEGIN
   EXCEPTION WHEN unique_violation THEN
     -- Concurrent refund won the race. Roll back the balance change.
     UPDATE credits
-    SET tokens = tokens - v_reserved_amount,
+    SET credits = credits - v_reserved_amount,
         updated_at = NOW()
     WHERE account_id = p_account_id;
 
@@ -469,7 +469,7 @@ $$;
 COMMENT ON FUNCTION refund_credits IS 'Return reserved credits. Guards against charge-then-refund and double-refund.';
 
 -- ============================================================================
--- FUNCTION: add_credits(account_id, tokens, description, idempotency_key)
+-- FUNCTION: add_credits(account_id, credits, description, idempotency_key)
 --
 -- Grant credits from a Stripe invoice, credit pack purchase, or manual grant.
 -- Additive (rollover): always adds to existing balance, never resets.
@@ -482,7 +482,7 @@ COMMENT ON FUNCTION refund_credits IS 'Return reserved credits. Guards against c
 
 CREATE OR REPLACE FUNCTION add_credits(
   p_account_id      UUID,
-  p_tokens          NUMERIC,
+  p_credits          NUMERIC,
   p_description     TEXT,
   p_idempotency_key TEXT DEFAULT NULL
 )
@@ -493,7 +493,7 @@ DECLARE
   v_new_balance NUMERIC;
   v_desc        TEXT;
 BEGIN
-  p_tokens := lf_validate_credit_amount(p_tokens, 'add_credits');
+  p_credits := lf_validate_credit_amount(p_credits, 'add_credits');
 
   -- Use idempotency_key as description if provided, else use p_description.
   v_desc := NULLIF(TRIM(COALESCE(p_idempotency_key, p_description)), '');
@@ -511,21 +511,21 @@ BEGIN
   END IF;
 
   -- Add credits to balance.
-  INSERT INTO credits (account_id, tokens, updated_at)
-  VALUES (p_account_id, p_tokens, NOW())
+  INSERT INTO credits (account_id, credits, updated_at)
+  VALUES (p_account_id, p_credits, NOW())
   ON CONFLICT (account_id)
-  DO UPDATE SET tokens = credits.tokens + p_tokens,
+  DO UPDATE SET credits = credits.credits + p_credits,
                 updated_at = NOW()
-  RETURNING tokens INTO v_new_balance;
+  RETURNING credits INTO v_new_balance;
 
   -- Log the addition.
   BEGIN
     INSERT INTO credit_ledger (account_id, type, amount, balance_after, description)
-    VALUES (p_account_id, 'add', p_tokens, v_new_balance, v_desc);
+    VALUES (p_account_id, 'add', p_credits, v_new_balance, v_desc);
   EXCEPTION WHEN unique_violation THEN
     -- Concurrent add won the race. Roll back the balance change.
     UPDATE credits
-    SET tokens = tokens - p_tokens,
+    SET credits = credits - p_credits,
         updated_at = NOW()
     WHERE account_id = p_account_id;
 
@@ -600,7 +600,7 @@ AS $$
 DECLARE
   v_balance NUMERIC;
 BEGIN
-  SELECT tokens INTO v_balance
+  SELECT credits INTO v_balance
   FROM credits
   WHERE account_id = p_account_id;
 
@@ -623,17 +623,17 @@ LANGUAGE plpgsql
 STABLE
 AS $$
 DECLARE
-  v_tokens NUMERIC;
+  v_credits NUMERIC;
 BEGIN
   IF p_variant_id IS NULL OR TRIM(p_variant_id) = '' THEN
     RETURN NULL;
   END IF;
 
-  SELECT tokens INTO v_tokens
+  SELECT credits INTO v_credits
   FROM plans
   WHERE variant_id = p_variant_id;
 
-  RETURN v_tokens;
+  RETURN v_credits;
 END;
 $$;
 

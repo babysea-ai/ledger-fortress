@@ -9,9 +9,9 @@ Every async credit system must survive these scenarios. `ledger-fortress` handle
 **The naive approach:**
 ```sql
 -- Request A                       -- Request B
-SELECT tokens FROM credits;        SELECT tokens FROM credits;
--- tokens = 10                     -- tokens = 10 (not yet updated)
-UPDATE credits SET tokens = 5;     UPDATE credits SET tokens = 5;
+SELECT credits FROM credits;        SELECT credits FROM credits;
+-- credits = 10                     -- credits = 10 (not yet updated)
+UPDATE credits SET credits = 5;     UPDATE credits SET credits = 5;
 -- Both succeed. Balance should be 0 but user only paid for one.
 ```
 
@@ -19,13 +19,13 @@ UPDATE credits SET tokens = 5;     UPDATE credits SET tokens = 5;
 ```sql
 -- Single atomic statement. No separate SELECT.
 UPDATE credits
-SET tokens = tokens - 5
+SET credits = credits - 5
 WHERE account_id = $1
-  AND tokens >= 5                  -- atomic guard
-RETURNING tokens;
+  AND credits >= 5                  -- atomic guard
+RETURNING credits;
 ```
 
-Request A runs the UPDATE, balance goes from 10 to 5. Request B runs the same UPDATE but now `tokens >= 5` is still true (5 >= 5), so it also succeeds. Balance: 0. If Request B asked for 6, `tokens >= 6` would be false (5 < 6), zero rows updated, reservation fails. No overdraw.
+Request A runs the UPDATE, balance goes from 10 to 5. Request B runs the same UPDATE but now `credits >= 5` is still true (5 >= 5), so it also succeeds. Balance: 0. If Request B asked for 6, `credits >= 6` would be false (5 < 6), zero rows updated, reservation fails. No overdraw.
 
 ## 2. Provider Ghost (No webhook ever arrives)
 

@@ -7,7 +7,7 @@ on:
   pull_request:
     branches: [main]
   schedule:
-    - cron: '43 3 * * 1'
+    - cron: '45 3 * * 1'
 
 permissions:
   contents: read
@@ -21,7 +21,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
       - name: Validate Sentry checker script
         run: node --check scripts/sentry-project-check.mjs
       - name: Verify Sentry project wiring

@@ -38,11 +38,11 @@ BabySea open source projects are organized into three categories:
 [![BabySea SDKs](https://img.shields.io/badge/sdks-BabySea-4f46e5.svg)](#babysea-oss-taxonomy)
 [![BabySea OSS Starters](https://img.shields.io/badge/oss%20starters-BabySea-0284c7.svg)](#babysea-oss-taxonomy)
 
-| Category           | Description                                                                                                                                                                                                                                                         |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **OSS Primitives** | Production-derived infrastructure patterns extracted from BabySea's execution control plane. These projects isolate one hard system invariant at a time, such as provider routing, credit settlement, idempotency, failover, reconciliation, or operational safety. |
-| **SDKs**           | Typed developer entry points into BabySea's execution control plane. SDKs provide application developers with a clean interface for creating, tracking, managing, and settling generative-media workloads without rebuilding provider-specific lifecycle logic.     |
-| **OSS Starters**   | Deployable reference applications that help builders adopt BabySea patterns quickly. Starters combine product UI, auth, billing, storage, rate limits, and BabySea SDK execution into working examples optimized for onboarding and implementation.                 |
+| Category | Description |
+| :--- | :--- |
+| **OSS Primitives** | Reusable infrastructure boundaries extracted from BabySea's execution control plane. Each primitive focuses on one system concern. |
+| **SDKs** | Typed developer entry points for creating, tracking, and managing BabySea workloads from application code. |
+| **OSS Starters** | Deployable reference applications that combine product UI, auth, billing, storage, and BabySea execution patterns. |
 
 ## BabySea OSS architecture
 
@@ -53,10 +53,13 @@ Application developers
 babysea SDK
   │
   ▼
+BabySea API
+  │
+  ▼
 BabySea execution control plane
   ├─ rosetta-bridge     request normalization
-  ├─ adaptive-island    provider ranking
-  ├─ execution-arrow    /v1/generate image/video execution (coming-soon)
+  ├─ adaptive-island    provider intelligence
+  ├─ execution-arrow    generation execution
   └─ ledger-fortress    credit settlement
 ```
 
@@ -362,12 +365,12 @@ Every AI generation platform reinvents the same billing stack. They hit the same
 
 | Problem (real, painful, recurring) | How `ledger-fortress` solves it |
 |---|---|
-| **Race conditions.** User clicks "Generate" twice in 50ms. Both requests check the balance before either deducts. Overdraw. | Single `UPDATE ... WHERE tokens >= cost` - atomic check-and-deduct in one statement. No TOCTOU window exists. |
+| **Race conditions.** User clicks "Generate" twice in 50ms. Both requests check the balance before either deducts. Overdraw. | Single `UPDATE ... WHERE credits >= cost` - atomic check-and-deduct in one statement. No TOCTOU window exists. |
 | **Lost credits.** Provider crashes mid-generation. No webhook arrives. Credits reserved forever. User churns. | Crash recovery cron finds orphans older than `windowMinutes` and refunds them. Idempotent with the success path. |
 | **Duplicate ledger events.** Stripe retries a webhook. Handler runs twice. User credited twice. Or a provider callback refunds twice. | Unique partial indexes cover `charge`, `refund`, `reserve`, and additive Stripe grants keyed on `(account_id, description)`. Exactly-once at the SQL level. |
 | **Webhooks arrive out of order.** Refund hits before the charge confirmation. User could generate for free. | `charge_credits` checks for prior refund and re-deducts atomically before logging charge. If it cannot fully collect, it returns `FALSE` for application review. `refund_credits` checks for prior charge and no-ops. |
 | **Stale credit-pack checkout.** User starts a credit-pack checkout, cancels subscription, then completes payment. | The Stripe helper supports a `hasActiveSubscription` callback so checkout completion can be denied at webhook time, not only at session creation. |
-| **Credit packs vanish on subscription renewal.** User buys $10 pack, then renewal "resets" the balance. Pack lost. | `add_credits` is additive (`tokens = tokens + amount`), never resets. Audit trail shows every grant. |
+| **Credit packs vanish on subscription renewal.** User buys $10 pack, then renewal "resets" the balance. Pack lost. | `add_credits` is additive (`credits = credits + amount`), never resets. Audit trail shows every grant. |
 | **Anyone with the Supabase anon key can read or forge ledger entries.** | Migration `003_security.sql` enables RLS, REVOKEs anon/authenticated access, and runs mutations as `SECURITY DEFINER` with locked `search_path`. |
 
 ### The credit lifecycle
@@ -417,7 +420,7 @@ See [`examples/typescript-sdk-demo/`](examples/typescript-sdk-demo/) and [`examp
 
 | Edge case | What goes wrong | How the fortress handles it |
 |---|---|---|
-| **Two clicks, 50ms apart** | Both `SELECT balance` return 10, both deduct 5 ➜ overdraw | Single `UPDATE ... WHERE tokens >= cost` - atomic, no separate SELECT |
+| **Two clicks, 50ms apart** | Both `SELECT balance` return 10, both deduct 5 ➜ overdraw | Single `UPDATE ... WHERE credits >= cost` - atomic, no separate SELECT |
 | **Provider never responds** | Credits locked forever, user complains | Crash recovery cron finds reservations older than threshold, refunds them |
 | **Duplicate success webhook** | Double-charge | Unique partial index on `(generation_id) WHERE type='charge'` - second INSERT is a no-op |
 | **Duplicate failure webhook** | Double-refund, free credits | Unique partial index on `(generation_id) WHERE type='refund'` - second INSERT is a no-op |
@@ -465,7 +468,7 @@ export async function POST(req: Request) {
 BabySea stores Stripe Price IDs in a Supabase `plans` table. The OSS keeps that table so your backend can map Stripe prices to credit allocations when your product policy needs plan-based grants or plan-aware UI:
 
 ```sql
-INSERT INTO plans (name, variant_id, tokens) VALUES
+INSERT INTO plans (name, variant_id, credits) VALUES
   ('Starter Monthly',  'price_starter_monthly',  9.000),
   ('Pro Monthly',      'price_pro_monthly',      29.000),
   ('Credit Pack $10',  'price_pack_10',          10.000),
@@ -474,7 +477,7 @@ INSERT INTO plans (name, variant_id, tokens) VALUES
 
 Credits are **additive** (rollover, never reset). A Pro subscriber who buys a $10 credit pack gets $39 total, not $29.
 
-By default, the Stripe helper mirrors BabySea's current grant path: it grants credits from the amount Stripe reports as paid (`amount_paid/100` for subscription invoices or `amount_total/100` for credit-pack checkouts) and skips non-positive amounts. Use `resolveInvoiceCredits` or `resolveCheckoutCredits` only when your own Stripe Price ID policy explicitly maps to fixed credits in `plans.tokens`; those resolvers are a portable helper over the real `plans` table pattern, not a new payment workflow.
+By default, the Stripe helper mirrors BabySea's current grant path: it grants credits from the amount Stripe reports as paid (`amount_paid/100` for subscription invoices or `amount_total/100` for credit-pack checkouts) and skips non-positive amounts. Use `resolveInvoiceCredits` or `resolveCheckoutCredits` only when your own Stripe Price ID policy explicitly maps to fixed credits in `plans.credits`; those resolvers are a portable helper over the real `plans` table pattern, not a new payment workflow.
 
 ### Stripe refund and dispute boundary
 

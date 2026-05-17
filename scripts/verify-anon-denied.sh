@@ -24,13 +24,13 @@ check_role_denied() {
     expect_denied "$role" "read public.$table" "select count(*) from public.$table" "$output"
   done
 
-  expect_denied "$role" "insert public.plans" "insert into public.plans (name, variant_id, tokens) values ('denied', 'price_denied', 1.000)" "$output"
-  expect_denied "$role" "insert public.credits" "insert into public.credits (account_id, tokens) values ('00000000-0000-0000-0000-000000000001'::uuid, 1.000)" "$output"
+  expect_denied "$role" "insert public.plans" "insert into public.plans (name, variant_id, credits) values ('denied', 'price_denied', 1.000)" "$output"
+  expect_denied "$role" "insert public.credits" "insert into public.credits (account_id, credits) values ('00000000-0000-0000-0000-000000000001'::uuid, 1.000)" "$output"
   expect_denied "$role" "insert public.credit_ledger" "insert into public.credit_ledger (account_id, type, amount, balance_after) values ('00000000-0000-0000-0000-000000000001'::uuid, 'add', 1.000, 1.000)" "$output"
   expect_denied "$role" "insert public.credit_alert_settings" "insert into public.credit_alert_settings (account_id) values ('00000000-0000-0000-0000-000000000001'::uuid)" "$output"
   expect_denied "$role" "insert public.credit_alert_log" "insert into public.credit_alert_log (account_id, threshold, balance) values ('00000000-0000-0000-0000-000000000001'::uuid, 1.000, 0.500)" "$output"
 
-  expect_denied "$role" "update public.credits" "update public.credits set tokens = tokens + 1 where account_id = '00000000-0000-0000-0000-000000000001'::uuid" "$output"
+  expect_denied "$role" "update public.credits" "update public.credits set credits = credits + 1 where account_id = '00000000-0000-0000-0000-000000000001'::uuid" "$output"
   expect_denied "$role" "delete public.credit_ledger" "delete from public.credit_ledger where account_id = '00000000-0000-0000-0000-000000000001'::uuid" "$output"
 
   expect_denied "$role" "execute has_credits" "select public.has_credits('00000000-0000-0000-0000-000000000001'::uuid, 1.000)" "$output"
